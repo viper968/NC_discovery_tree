@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NodeCore Discovery Tree</title>
-<meta name="description" content="An explorable map of NodeCore's hint progression, with an optional spoiler-free mode that reveals the tree one discovery at a time.">
+<meta name="description" content="An explorable map of NodeCore's hints and crafting recipes, with mods from ContentDB and an optional spoiler-free mode that reveals the tree one discovery at a time.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect x=%221%22 y=%221%22 width=%2214%22 height=%2214%22 rx=%222%22 fill=%22%23b5561b%22/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -12,13 +12,18 @@
 <header class="topbar">
   <div class="brand">
     <h1>NodeCore Discovery Tree</h1>
-    <span class="progress" id="progress">0 / 0 discovered</span>
+    <span class="progress" id="progress"></span>
+  </div>
+  <div class="seg" role="tablist" aria-label="Which tree">
+    <button role="tab" data-kind="hints" aria-selected="true">Hints</button>
+    <button role="tab" data-kind="recipes" aria-selected="false">Recipes</button>
   </div>
   <div class="search">
-    <input id="search" type="search" placeholder="Search discoveries…" autocomplete="off" aria-label="Search discoveries">
+    <input id="search" type="search" placeholder="Search…" autocomplete="off" aria-label="Search">
     <ul id="results" class="results" hidden></ul>
   </div>
   <div class="controls">
+    <select id="modFilter" aria-label="Show one mod"></select>
     <label class="switch" title="Hide everything you haven't unlocked yet">
       <input type="checkbox" id="spoilers">
       <span class="track"><span class="thumb"></span></span>
@@ -29,12 +34,13 @@
       <button id="zoomFit" title="Fit to screen">Fit</button>
       <button id="zoomIn" title="Zoom in" aria-label="Zoom in">+</button>
     </div>
-    <button id="reset" class="ghost" title="Forget everything you've marked as discovered">Reset progress</button>
+    <button id="modsBtn" class="ghost" title="Add mods from ContentDB or a zip">Mods<span id="modsCount" class="count" hidden></span></button>
+    <button id="reset" class="ghost" title="Forget everything you've marked in this tree">Reset progress</button>
   </div>
 </header>
 
 <div id="focusBar" class="focusbar" hidden>
-  Showing only what's needed for <strong id="focusName"></strong>
+  <span id="focusText"></span>
   <button id="focusClear" class="ghost small">Show everything</button>
 </div>
 
@@ -48,6 +54,32 @@
   <aside id="details" class="details" aria-live="polite"></aside>
 </main>
 
-<script src="app.js"></script>
+<div id="modsPanel" class="drawer" hidden role="dialog" aria-label="Mods">
+  <div class="drawer-head">
+    <h2>Mods</h2>
+    <button class="ghost small" data-close-mods>Close</button>
+  </div>
+  <p class="sub">Mods run here as they do in game: their own Lua, on top of NodeCore, in your browser.
+    What they register is added to both trees. Installed mods are kept in this browser.</p>
+  <div id="modsStatus" class="status"></div>
+
+  <h3>Installed</h3>
+  <ul id="modsInstalled" class="mod-list"></ul>
+
+  <h3>Add from ContentDB</h3>
+  <form id="cdbForm" class="cdb-form">
+    <input id="cdbQuery" type="search" placeholder="Search NodeCore mods…" aria-label="Search ContentDB">
+    <button class="ghost" type="submit">Search</button>
+  </form>
+  <ul id="cdbResults" class="mod-list"></ul>
+
+  <h3>Add from a file</h3>
+  <label class="drop" id="dropZone">
+    <input id="zipInput" type="file" accept=".zip,application/zip" multiple>
+    <span>Drop mod <code>.zip</code> files here, or click to choose</span>
+  </label>
+</div>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>

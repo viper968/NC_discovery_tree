@@ -1,0 +1,9 @@
+{
+  "name": "nc-discovery-tree",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "extract": "node tools/extract-cli.mjs"
+  }
+}
