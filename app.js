@@ -1,18 +1,18 @@
 /* NodeCore discovery tree viewer.
  *
  * Two trees over the same game: NodeCore's hints, and its items with the
- * recipes that make them (loader/graphs.js builds both). Nodes are laid
- * out left to right by tier. In spoilers mode only what you have
- * discovered, what that makes available, and "???" placeholders for
- * partly-unlocked nodes are drawn; clicking an available node marks it
- * discovered and reveals what it leads to.
+ * recipes that make them (loader/graphs.js builds both), drawn as a node
+ * web (web.js). In spoilers mode only what you have discovered, what that
+ * makes available, and "?" placeholders for partly-unlocked nodes are
+ * shown; clicking an available node marks it discovered and the web grows
+ * out with what it leads to.
  */
 import { hintTreeFromCurated, hintTreeFromExtract, recipeTreeFromExtract } from './loader/graphs.js';
 import { initMods } from './mods-ui.js';
+import { WebView } from './web.js';
 
 const CURATED_URL = 'data/nodecore-discovery.json';
 const EXTRACT_URL = 'data/nodecore-extract.json';
-const CARD_W = 210, CARD_H = 56, GAP_X = 80, SUB_GAP = 14, GAP_Y = 14, PAD = 28, HEAD = 34, MAX_ROWS = 18;
 const STORE_SPOIL = 'nc-tree:spoilers', STORE_KIND = 'nc-tree:kind';
 const storeDisc = (kind) => `nc-tree:discovered:${kind}`;
 
@@ -30,7 +30,8 @@ const TEXT = {
 };
 
 const $ = (id) => document.getElementById(id);
-const viewport = $('viewport'), stage = $('stage'), canvas = $('canvas'), details = $('details');
+const viewport = $('viewport'), details = $('details');
+let web = null;
 
 // ---------- storage (best effort) ----------
 function load(key, fallback) {
@@ -48,10 +49,7 @@ let T = null;                 // the current tree, indexed (see indexTree)
 let spoilers = true;
 const discovered = { hints: new Set(), recipes: new Set() };
 const view = { hints: { selected: null, focus: null, mod: '' }, recipes: { selected: null, focus: null, mod: '' } };
-let zoom = 1;
 let visState = {};            // id -> "done" | "open" | "locked" (visible ids only)
-let positions = {};
-let contentSize = { w: 0, h: 0 };
 const fresh = new Set();
 
 const V = () => view[kind];
@@ -185,58 +183,6 @@ function descendants(id) {
   return out;
 }
 
-// ---------- layout ----------
-function layout(ids) {
-  const byTier = new Map();
-  for (const id of ids) {
-    const t = tierOf(id);
-    if (!byTier.has(t)) byTier.set(t, []);
-    byTier.get(t).push(id);
-  }
-  const tiers = [...byTier.keys()].sort((a, b) => a - b);
-  const cols = tiers.map((t) => byTier.get(t).sort((a, b) => {
-    const A = T.nodes.get(a), B = T.nodes.get(b);
-    return String(A.mod).localeCompare(B.mod) || A.text.localeCompare(B.text);
-  }));
-  const inSet = new Set(ids);
-  const rows = Math.min(MAX_ROWS, Math.max(1, ...cols.map((c) => c.length)));
-  const slot = (c, i) => (c.length <= rows ? i + (rows - c.length) / 2 : (i % rows));
-  const indexOf = () => {
-    const idx = {};
-    cols.forEach((c) => c.forEach((id, i) => { idx[id] = slot(c, i); }));
-    return idx;
-  };
-  const order = (col, idx, edgesOf, pick) => {
-    const score = {};
-    col.forEach((id, i) => {
-      const ns = edgesOf.get(id).filter((e) => !e.back && inSet.has(pick(e))).map((e) => idx[pick(e)]).filter((v) => v !== undefined);
-      score[id] = ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : slot(col, i);
-    });
-    col.sort((a, b) => score[a] - score[b]);
-  };
-  // barycentre sweeps to cut down crossings
-  for (let pass = 0; pass < 4; pass++) {
-    for (let i = 1; i < cols.length; i++) order(cols[i], indexOf(), T.parents, (e) => e.from);
-    for (let j = cols.length - 2; j >= 0; j--) order(cols[j], indexOf(), T.children, (e) => e.to);
-  }
-  positions = {};
-  const labels = [];
-  let x = PAD;
-  cols.forEach((c, ci) => {
-    const subs = Math.ceil(c.length / rows);
-    const off = c.length < rows ? (rows - c.length) * (CARD_H + GAP_Y) / 2 : 0;
-    c.forEach((id, i) => {
-      const sub = Math.floor(i / rows);
-      positions[id] = { x: x + sub * (CARD_W + SUB_GAP), y: PAD + HEAD + off + (i % rows) * (CARD_H + GAP_Y) };
-    });
-    const w = subs * CARD_W + (subs - 1) * SUB_GAP;
-    labels.push({ tier: tiers[ci], x, w, unreachable: c.some((id) => T.nodes.get(id).unreachable) });
-    x += w + GAP_X;
-  });
-  contentSize = { w: x - GAP_X + PAD, h: PAD * 2 + HEAD + rows * (CARD_H + GAP_Y) - GAP_Y };
-  return labels;
-}
-
 // ---------- rendering ----------
 function visibleIds() {
   let ids = Object.keys(visState);
@@ -264,55 +210,43 @@ function render() {
   $('focusBar').hidden = !bar.length;
   $('focusText').innerHTML = bar.length ? `Showing ${bar.join(', within ')}` : '';
 
-  const labels = layout(ids);
   const shown = new Set(ids);
-  const html = [];
-  const svg = [`<svg width="${contentSize.w}" height="${contentSize.h}">`];
+  const links = [];
   const drawn = new Set();
   for (const id of ids) {
     const n = T.nodes.get(id);
     eachKey(n.req, (k) => {
-      // draw the earliest providers of each requirement (all are listed in the panel)
+      // link the earliest providers of each requirement (all are listed in the panel)
       let ps = k.providers.filter((p) => shown.has(p.id) && (spoilers ? D().has(p.id) : !p.back));
       if (!ps.length) return;
       const best = Math.min(...ps.map((p) => tierOf(p.id)));
       ps = ps.filter((p) => tierOf(p.id) === best).slice(0, 3);
       for (const p of ps) {
         const key = `${p.id}>${id}`;
-        if (drawn.has(key)) continue;
+        if (drawn.has(key) || p.id === id) continue;
         drawn.add(key);
-        const a = positions[p.id], b = positions[id];
-        const x1 = a.x + CARD_W, y1 = a.y + CARD_H / 2, x2 = b.x, y2 = b.y + CARD_H / 2;
-        if (x2 <= x1) continue;
-        const dx = Math.max(30, (x2 - x1) / 2);
-        const d = `M${x1} ${y1}C${x1 + dx} ${y1} ${x2 - dx} ${y2} ${x2} ${y2}`;
-        const tip = hiddenName(id) ? '' : `via ${k.key}`;
-        svg.push(`<path class="edge" data-from="${esc(p.id)}" data-to="${esc(id)}" d="${d}"><title>${esc(tip)}</title></path>`);
+        links.push({ source: p.id, target: id });
       }
     });
   }
-  svg.push('</svg>');
-  html.push(svg.join(''));
-
-  for (const l of labels) {
-    html.push(`<div class="tier-label" style="left:${l.x}px;top:${PAD}px;width:${l.w}px">${l.unreachable && l === labels[labels.length - 1] ? 'Out of reach' : `Tier ${l.tier}`}</div>`);
-  }
-
-  for (const id of ids) {
-    const n = T.nodes.get(id), p = positions[id], s = visState[id], hide = hiddenName(id);
-    const title = hide ? '???' : cap(n.text);
-    const meta = hide ? 'locked' : (T.dupe.has(id) ? n.info.name.split(':').pop() : modName(n.mod)) + (s === 'open' && spoilers ? ' · new' : '');
-    const badge = s === 'done' ? '✓' : s === 'open' ? '●' : hide ? '🔒' : '';
-    html.push(`<button class="card ${s}${fresh.has(id) ? ' fresh' : ''}${n.unreachable ? ' unreach' : ''}" data-id="${esc(id)}" `
-      + `style="left:${p.x}px;top:${p.y}px;width:${CARD_W}px;height:${CARD_H}px;--hue:${hue(String(n.mod))}" `
-      + `title="${esc(hide ? 'Locked — discover more to reveal' : cap(n.text))}">`
-      + `<span class="t">${esc(title)}</span><span class="m">${esc(meta)}</span>`
-      + (badge ? `<span class="badge" aria-hidden="true">${badge}</span>` : '') + '</button>');
-  }
-
-  canvas.innerHTML = html.join('');
+  // rings: one per tier present, numbered from the middle out
+  const tiers = [...new Set(ids.map(tierOf))].sort((a, b) => a - b);
+  const ringOf = new Map(tiers.map((t, i) => [t, i]));
+  const deepest = Math.max(0, ...T.tree.nodes.filter((n) => !n.unreachable).map((n) => n.tier));
+  const rings = tiers.map((t, i) => ({ ring: i, label: t > deepest ? 'Out of reach' : `Tier ${t}` }));
+  const nodes = ids.map((id) => {
+    const n = T.nodes.get(id), s = visState[id], hide = hiddenName(id);
+    return {
+      id, state: s, mystery: hide, ring: ringOf.get(tierOf(id)), fresh: fresh.has(id),
+      label: hide ? '???' : cap(n.text),
+      sub: hide ? '' : (T.dupe.has(id) ? n.info.name : modName(n.mod)),
+      weight: T.children.get(id).filter((e) => !e.back).length,
+      hue: hue(String(n.mod)),
+    };
+  });
+  const how = web.update(kind, nodes, links, rings);
+  if (how === 'new') web.fit(false);
   fresh.clear();
-  applyZoom();
   if (v.selected && !shown.has(v.selected)) v.selected = null;
   highlight();
   renderDetails();
@@ -321,20 +255,7 @@ function render() {
 
 function highlight() {
   const sel = V().selected;
-  canvas.classList.toggle('has-sel', !!sel);
-  const anc = sel ? quickest(sel) : new Set();
-  const desc = sel ? descendants(sel) : new Set();
-  canvas.querySelectorAll('.card').forEach((el) => {
-    const id = el.getAttribute('data-id');
-    el.classList.toggle('sel', id === sel);
-    el.classList.toggle('anc', anc.has(id));
-    el.classList.toggle('desc', desc.has(id));
-  });
-  canvas.querySelectorAll('.edge').forEach((el) => {
-    const f = el.getAttribute('data-from'), t = el.getAttribute('data-to');
-    el.classList.toggle('hl-anc', !!sel && (t === sel || anc.has(t)) && anc.has(f));
-    el.classList.toggle('hl-desc', !!sel && (f === sel || desc.has(f)) && desc.has(t));
-  });
+  web.highlight({ selected: sel, anc: sel ? quickest(sel) : new Set(), desc: sel ? descendants(sel) : new Set() });
 }
 
 // ---------- details panel ----------
@@ -397,18 +318,18 @@ function renderIntro() {
   const src = m.source || (base.curated && hintTreeFromCurated(base.curated).meta.source);
   return `<h2>How to use this</h2>`
     + (kind === 'hints'
-      ? '<p>Each card is one of NodeCore\'s in-game hints. Lines run from a discovery to the ones it unlocks; tiers go left to right from what you can do on day one.</p>'
-      : '<p>Each card is an item, laid out by how many steps it takes to get. Lines run from an ingredient or tool to what it helps make. This covers every mod, whether or not it adds hints.</p>')
+      ? '<p>Each dot is one of NodeCore\'s in-game hints, with arrows to the ones it unlocks. Day-one hints drift to the middle and later ones outward; bigger dots unlock more.</p>'
+      : '<p>Each dot is an item, with arrows from ingredients and tools to what they help make. What you find in the world drifts to the middle and harder things outward; colour is the mod. This covers every mod, whether or not it adds hints.</p>')
     + (spoilers
-      ? `<p><strong>Spoilers mode is on.</strong> You only see what you've ${L().count} and what's within reach next. Click a highlighted card once you've done it in-game to reveal what it leads to. <code>???</code> cards need more first.</p>`
-      : '<p>Click any card to see what it needs and what it leads to. Turn on <strong>Spoilers mode</strong> to hide everything you haven\'t reached yet.</p>')
+      ? `<p><strong>Spoilers mode is on.</strong> You only see what you've ${L().count} and what's within reach next. Click a highlighted dot once you've done it in-game to reveal what it leads to. <code>?</code> dots need more first.</p>`
+      : '<p>Click any dot to see what it needs and what it leads to. Drag to pan, scroll to zoom (names appear as you zoom in), and drag dots about. Turn on <strong>Spoilers mode</strong> to hide everything you haven\'t reached yet.</p>')
     + '<h3>Legend</h3><ul class="legend">'
     + `<li><span class="swatch done"></span>${L().done}</li>`
     + '<li><span class="swatch open"></span>Within reach now</li>'
     + '<li><span class="swatch locked"></span>Locked (needs more)</li>'
     + '<li><span class="line anc"></span>The quickest way to the selection</li>'
     + '<li><span class="line desc"></span>What the selection leads to</li></ul>'
-    + '<p class="sub">Only the earliest way to each requirement is drawn; the panel lists them all. Steps that loop back to earlier ones are marked <em>(loop)</em>.</p>'
+    + '<p class="sub">Only the earliest way to each requirement is drawn; the panel lists them all. Steps that loop back to earlier ones are marked <em>(loop)</em>. Bigger dots lead to more things.</p>'
     + '<h3>About the data</h3><ul class="meta-list">'
     + `<li>${m.count} ${L().noun}${m.recipes ? ` · ${m.recipes} ways of making things` : ''}</li>`
     + (src ? `<li>From <a href="${esc(src.repo)}">NodeCore</a> commit <code>${esc(String(src.commit).slice(0, 7))}</code>${src.date ? ` (${esc(src.date)})` : ''}</li>` : '')
@@ -507,36 +428,7 @@ function setDiscovered(id, on) {
   save(storeDisc(kind), [...D()]);
   render();
 }
-function scrollToNode(id) {
-  const p = positions[id];
-  if (!p) return;
-  viewport.scrollTo({
-    left: (p.x + CARD_W / 2) * zoom - viewport.clientWidth / 2,
-    top: (p.y + CARD_H / 2) * zoom - viewport.clientHeight / 2,
-    behavior: 'smooth',
-  });
-}
-function applyZoom() {
-  canvas.style.transform = `scale(${zoom})`;
-  canvas.style.width = `${contentSize.w}px`;
-  canvas.style.height = `${contentSize.h}px`;
-  stage.style.width = `${contentSize.w * zoom}px`;
-  stage.style.height = `${contentSize.h * zoom}px`;
-}
-function setZoom(z, cx = viewport.clientWidth / 2, cy = viewport.clientHeight / 2) {
-  z = Math.min(2, Math.max(0.15, z));
-  const wx = (viewport.scrollLeft + cx) / zoom, wy = (viewport.scrollTop + cy) / zoom;
-  zoom = z;
-  applyZoom();
-  viewport.scrollLeft = wx * zoom - cx;
-  viewport.scrollTop = wy * zoom - cy;
-}
-function fit() {
-  zoom = Math.max(0.15, Math.min(1, (viewport.clientWidth - 8) / contentSize.w, (viewport.clientHeight - 8) / contentSize.h));
-  applyZoom();
-  viewport.scrollLeft = 0;
-  viewport.scrollTop = 0;
-}
+function scrollToNode(id) { web.focusOn(id); }
 function clearFilterFor(id) {
   const v = V();
   let changed = false;
@@ -555,7 +447,7 @@ function setKind(k, { keepScroll } = {}) {
   fillModFilter();
   render();
   setHash();
-  if (!keepScroll) { viewport.scrollLeft = 0; viewport.scrollTop = 0; }
+  if (!keepScroll) web.fit();
 }
 
 function fillModFilter() {
@@ -609,22 +501,19 @@ function pickResult(id) {
 }
 
 // ---------- events ----------
-let dragMoved = false;
+function clickNode(id) {
+  if (spoilers && visState[id] === 'open') { V().selected = id; setDiscovered(id, true); select(id); return; }
+  select(id === V().selected ? null : id);
+}
+
 function wire() {
-  canvas.addEventListener('click', (ev) => {
-    if (dragMoved) return;
-    const card = ev.target.closest('.card');
-    if (!card) { select(null); return; }
-    const id = card.getAttribute('data-id');
-    if (spoilers && visState[id] === 'open') { V().selected = id; setDiscovered(id, true); select(id); return; }
-    select(id === V().selected ? null : id);
-  });
+  web = new WebView(viewport, { click: clickNode, background: () => select(null) });
   details.addEventListener('click', (ev) => {
     const go = ev.target.closest('[data-go]');
     if (go) { const id = go.getAttribute('data-go'); clearFilterFor(id); select(id, true); return; }
     const sel = V().selected;
     if (ev.target.closest('[data-toggle]')) { setDiscovered(sel, !D().has(sel)); return; }
-    if (ev.target.closest('[data-focus]')) { V().focus = V().focus === sel ? null : sel; render(); if (sel) scrollToNode(sel); return; }
+    if (ev.target.closest('[data-focus]')) { V().focus = V().focus === sel ? null : sel; render(); setTimeout(() => (V().focus ? web.fit() : scrollToNode(sel)), 700); return; }
     if (ev.target.closest('[data-close]')) select(null);
   });
   $('focusClear').addEventListener('click', () => {
@@ -632,7 +521,7 @@ function wire() {
     render();
     if (V().selected) scrollToNode(V().selected);
   });
-  $('modFilter').addEventListener('change', (ev) => { V().mod = ev.target.value; V().focus = null; render(); viewport.scrollLeft = 0; });
+  $('modFilter').addEventListener('change', (ev) => { V().mod = ev.target.value; V().focus = null; render(); setTimeout(() => web.fit(), 700); });
   document.querySelectorAll('.seg [data-kind]').forEach((b) => b.addEventListener('click', () => setKind(b.dataset.kind)));
 
   const sp = $('spoilers');
@@ -651,15 +540,9 @@ function wire() {
       render();
     }
   });
-  $('zoomIn').addEventListener('click', () => setZoom(zoom * 1.2));
-  $('zoomOut').addEventListener('click', () => setZoom(zoom / 1.2));
-  $('zoomFit').addEventListener('click', fit);
-  viewport.addEventListener('wheel', (ev) => {
-    if (!ev.ctrlKey && !ev.metaKey) return;
-    ev.preventDefault();
-    const r = viewport.getBoundingClientRect();
-    setZoom(zoom * (ev.deltaY < 0 ? 1.1 : 1 / 1.1), ev.clientX - r.left, ev.clientY - r.top);
-  }, { passive: false });
+  $('zoomIn').addEventListener('click', () => web.zoomBy(1.3));
+  $('zoomOut').addEventListener('click', () => web.zoomBy(1 / 1.3));
+  $('zoomFit').addEventListener('click', () => web.fit());
 
   search.addEventListener('input', runSearch);
   search.addEventListener('keydown', (ev) => {
@@ -679,28 +562,6 @@ function wire() {
   document.addEventListener('click', (ev) => { if (!ev.target.closest('.search')) results.hidden = true; });
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && document.activeElement !== search && $('modsPanel').hidden) select(null);
-  });
-
-  // drag the background to pan
-  let drag = null;
-  viewport.addEventListener('pointerdown', (ev) => {
-    if (ev.button !== 0 || ev.pointerType === 'touch') return;
-    drag = { x: ev.clientX, y: ev.clientY, l: viewport.scrollLeft, t: viewport.scrollTop };
-    dragMoved = false;
-  });
-  window.addEventListener('pointermove', (ev) => {
-    if (!drag) return;
-    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
-    if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 5) return;
-    dragMoved = true;
-    viewport.classList.add('dragging');
-    viewport.scrollLeft = drag.l - dx;
-    viewport.scrollTop = drag.t - dy;
-  });
-  window.addEventListener('pointerup', () => {
-    drag = null;
-    viewport.classList.remove('dragging');
-    setTimeout(() => { dragMoved = false; }, 0);
   });
 }
 

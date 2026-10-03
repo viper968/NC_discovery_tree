@@ -33,6 +33,7 @@
     --edge: rgba(220, 205, 180, 0.22);
     --edge-dim: rgba(220, 205, 180, 0.06);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --dim: 0.4;
     color-scheme: dark;
   }
 }
@@ -52,6 +53,7 @@
   --edge: rgba(220, 205, 180, 0.22);
   --edge-dim: rgba(220, 205, 180, 0.06);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --dim: 0.4;
   color-scheme: dark;
 }
 
@@ -147,67 +149,56 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 /* ---- main layout ---- */
 .layout { flex: 1; display: flex; min-height: 0; }
 .viewport {
-  flex: 1; overflow: auto; position: relative; cursor: grab; outline: none;
+  flex: 1; overflow: hidden; position: relative; outline: none;
   background-image: radial-gradient(var(--border) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 .viewport.dragging { cursor: grabbing; user-select: none; }
-.stage { position: relative; }
-.canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.canvas svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
 .loading.error { color: var(--accent); padding: 16px; text-align: center; }
 
-.tier-label {
-  position: absolute; font-size: 11px; font-weight: 650; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--muted); text-align: center;
+/* ---- the node web ---- */
+svg.web { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+svg.web:active { cursor: grabbing; }
+.rings { display: none; }
+.rings circle { fill: none; stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 6; }
+.rings text {
+  fill: var(--muted); font-size: calc(11px * min(var(--inv, 1), 4)); font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase;
+  text-anchor: middle; opacity: 0.8;
 }
-
-/* ---- edges ---- */
-.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; transition: stroke 0.15s, opacity 0.15s; }
-.has-sel .edge { stroke: var(--edge-dim); }
-.has-sel .edge.hl-anc { stroke: var(--anc); stroke-width: 2; }
-.has-sel .edge.hl-desc { stroke: var(--desc); stroke-width: 2; }
-
-/* ---- cards ---- */
-.card {
-  position: absolute;
-  display: flex; flex-direction: column; justify-content: center; gap: 1px;
-  padding: 4px 26px 4px 12px;
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid hsl(var(--hue), 45%, 50%);
-  border-radius: 6px;
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  transition: opacity 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+.links line { stroke: var(--edge); stroke-width: 1.2; transition: stroke 0.15s, opacity 0.15s; }
+.arrow { fill: var(--edge); }
+.arrow.anc { fill: var(--anc); }
+.arrow.desc { fill: var(--desc); }
+.node { cursor: pointer; }
+.node .dot {
+  fill: hsl(var(--hue), 42%, 52%); stroke: var(--surface); stroke-width: 1.5;
+  transition: opacity 0.15s;
 }
-.card:hover { border-color: var(--accent); z-index: 2; }
-.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.card .t {
-  font-weight: 560; font-size: 13px; line-height: 1.2;
-  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+.node .halo { fill: none; stroke: transparent; stroke-width: 3; }
+.node.done .halo { stroke: var(--done); }
+.node.open .halo { stroke: var(--accent); stroke-dasharray: 3 3; }
+.node.mystery .dot { fill: var(--surface-2); stroke: var(--muted); stroke-dasharray: 2 2; }
+.node .mark { fill: #fff; font-size: 10px; font-weight: 700; text-anchor: middle; pointer-events: none; }
+.node.mystery .mark { fill: var(--muted); }
+.node .label {
+  fill: var(--text); font-size: calc(11px * min(var(--inv, 1), 3)); text-anchor: middle; pointer-events: none;
+  paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+  display: none;
 }
-.card .m { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .badge { position: absolute; right: 7px; top: 50%; transform: translateY(-50%); font-size: 13px; line-height: 1; }
-.card.done { background: linear-gradient(var(--done-soft), var(--done-soft)), var(--surface); }
-.card.done .badge { color: var(--done); }
-.card.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft), var(--shadow); }
-.card.open .badge { color: var(--accent); }
-.card.locked {
-  border-style: dashed; border-left-style: solid; border-left-color: var(--border);
-  background: var(--surface-2); color: var(--muted);
-}
-.card.locked .t { letter-spacing: 0.2em; }
-.card.fresh { animation: pop 0.45s ease-out; }
-@keyframes pop { 0% { transform: scale(0.85); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
-
-.has-sel .card { opacity: 0.35; }
-.has-sel .card.sel, .has-sel .card.anc, .has-sel .card.desc { opacity: 1; }
-.card.sel { box-shadow: 0 0 0 3px var(--accent), var(--shadow); z-index: 3; }
-.card.anc { border-color: var(--anc); }
-.card.desc { border-color: var(--desc); }
+/* labels: the bigger hubs from mid zoom, all of them up close, and whatever is lit up */
+svg.web:not(.far) .node.big .label, svg.web.near .node .label,
+.node.sel .label, .node.anc .label, .node.kid .label, .node:hover .label { display: block; }
+.node:hover .halo { stroke: var(--accent); }
+.node.fresh .dot { animation: pop 0.6s ease-out; transform-box: fill-box; transform-origin: center; }
+@keyframes pop { 0% { transform: scale(0.2); } 70% { transform: scale(1.25); } 100% { transform: scale(1); } }
+svg.web.has-sel .node { opacity: var(--dim, 0.25); }
+svg.web.has-sel .node.sel, svg.web.has-sel .node.anc, svg.web.has-sel .node.desc { opacity: 1; }
+svg.web.has-sel .links line { opacity: var(--dim, 0.25); }
+svg.web.has-sel .links line.hl-anc { stroke: var(--anc); stroke-width: 2.2; opacity: 1; }
+svg.web.has-sel .links line.hl-desc { stroke: var(--desc); stroke-width: 2.2; opacity: 1; }
+.node.sel .halo { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; }
+.node.sel .label { font-weight: 700; font-size: calc(13px * min(var(--inv, 1), 3)); }
 
 /* ---- details panel ---- */
 .details {
@@ -250,10 +241,10 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .nlink[disabled] .nt { text-decoration: none; color: var(--muted); }
 .op { font-weight: 650; color: var(--accent); }
 .legend li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-.swatch { width: 26px; height: 14px; border-radius: 3px; border: 1px solid var(--border); flex: none; }
-.swatch.done { background: var(--done-soft); border-color: var(--done); }
-.swatch.open { border-color: var(--accent); background: var(--surface); }
-.swatch.locked { border-style: dashed; background: var(--surface-2); }
+.swatch { width: 14px; height: 14px; margin: 0 6px; border-radius: 50%; background: hsl(30, 42%, 52%); flex: none; }
+.swatch.done { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--done); }
+.swatch.open { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.swatch.locked { background: var(--surface-2); border: 1px dashed var(--muted); }
 .line { width: 26px; height: 0; border-top: 2px solid; flex: none; }
 .line.anc { border-color: var(--anc); }
 .line.desc { border-color: var(--desc); }
@@ -301,7 +292,6 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .providers.flat { padding-left: 0 !important; border-left: 0 !important; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chips code { background: var(--surface-2); border-radius: 4px; padding: 1px 6px; }
-.card.unreach { border-style: dotted; }
 
 /* ---- mods drawer ---- */
 .drawer {
