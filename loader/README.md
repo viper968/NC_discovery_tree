@@ -13,6 +13,7 @@ page's trees.
 | `sources.js` | Downloads a release from the mod's source repo (GitHub, GitLab, Codeberg) at the commit ContentDB built it from | nodecore_light_logic_sim `src/mods/sources.js`, plus a `wanted` filter so textures are skipped |
 | `package.js` | Finds the mod or modpack in an archive, reads `mod.conf`, orders by dependency | nodecore_light_logic_sim `src/mods/package.js`, as is |
 | `zip.js` | Zip reader | nodecore_light_logic_sim `src/mods/zip.js`, as is |
+| `cache.js` | Mod results cached per combination of mods, keyed on a fingerprint of their files and the loader | new |
 | `store.js` | Installed mods in IndexedDB | nodecore_light_logic_sim `src/mods/store.js`, with its own database name |
 | `vendor/fengari/` | Fengari, Lua 5.3 in JavaScript (MIT), patched to print floats like LuaJIT | nodecore_light_logic_sim `src/vendor/fengari/` |
 

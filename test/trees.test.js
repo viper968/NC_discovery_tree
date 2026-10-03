@@ -121,3 +121,15 @@ test('a mod whose only crafting is an ABM shows up in the recipe tree', async ()
   assert.ok(soaked && !soaked.unreachable);
   assert.ok(soaked.tier > t.get('item:abmmod:raw').tier);
 });
+
+test('cached mod results are keyed on the files themselves, the set of mods and the loader', async () => {
+  const { extractKey } = await import('../loader/cache.js');
+  const enc = new TextEncoder();
+  const pkg = (key, text) => ({ key, files: new Map([[`${key}/init.lua`, enc.encode(text)], [`${key}/mod.conf`, enc.encode(`name = ${key}`)]]) });
+  const loader = ['v1', 'lua', 'game'];
+  const a = await extractKey([pkg('a', 'x = 1'), pkg('b', 'y = 2')], loader);
+  assert.equal(a, await extractKey([pkg('b', 'y = 2'), pkg('a', 'x = 1')], loader), 'order of install does not matter');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 2'), pkg('b', 'y = 2')], loader), 'a changed file');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 1')], loader), 'a mod removed');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 1'), pkg('b', 'y = 2')], ['v2', 'lua', 'game']), 'a new loader');
+});

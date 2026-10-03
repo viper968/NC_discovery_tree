@@ -5,6 +5,12 @@
 import { openPackage, loadOrder } from './package.js';
 import { readZip } from './zip.js';
 
+/**
+ * Bump when what the extract holds, or how it is worked out, changes in a
+ * way extract.lua's own text doesn't show (cached extracts are keyed on both).
+ */
+export const EXTRACT_VERSION = 1;
+
 let fengari = null;
 async function loadFengari() {
   if (fengari) return fengari;

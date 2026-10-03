@@ -48,6 +48,19 @@ Installed mods are kept in the browser (IndexedDB) and load again on the
 next visit. The panel shows what each added, and any errors or missing
 dependencies.
 
+Running mods takes a few seconds, so the result is cached in the browser
+too, once per **combination of mods**. It is keyed on a fingerprint of
+every installed mod's files (so an update, or a different zip of the
+"same" version, counts as a change), the loader's version and Lua, and
+NodeCore's bundled code; reloading the page with the same mods, or going
+back to a set used before, is instant. A single mod's results can't be
+cached alone, because mods run together and change one another (NodeCore's
+"flammables ignite" lights NodeCore Light's lanterns). The last six
+combinations are kept; **Run again** in the Mods panel ignores the cache.
+The trees are rebuilt from the cached extract each time, so changes to how
+they are drawn never need a recompute; bump `EXTRACT_VERSION` in
+`loader/extract.js` when what an extract holds changes.
+
 This reuses the mod-installing code from
 [nodecore_light_logic_sim](https://github.com/viper968/nodecore_light_logic_sim)
 (`claude/nodecore-mods` branch); `loader/README.md` lists what came from where.
