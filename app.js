@@ -11,10 +11,11 @@ import { hintTreeFromCurated, hintTreeFromExtract, recipeTreeFromExtract } from 
 import { initMods } from './mods-ui.js';
 import { mergeProbes } from './loader/extract.js';
 import { WebView } from './web.js';
+import { FORMS, applyForm, modColor } from './cvd.js';
 
 const CURATED_URL = 'data/nodecore-discovery.json';
 const EXTRACT_URL = 'data/nodecore-extract.json';
-const STORE_SPOIL = 'nc-tree:spoilers', STORE_KIND = 'nc-tree:kind';
+const STORE_SPOIL = 'nc-tree:spoilers', STORE_KIND = 'nc-tree:kind', STORE_CVD = 'nc-tree:cvd';
 const storeDisc = (kind) => `nc-tree:discovered:${kind}`;
 
 const TEXT = {
@@ -48,6 +49,7 @@ const trees = {};
 let kind = 'hints';
 let T = null;                 // the current tree, indexed (see indexTree)
 let spoilers = true;
+let cvd = 'normal';           // colour vision form (cvd.js)
 const discovered = { hints: new Set(), recipes: new Set() };
 const view = { hints: { selected: null, focus: null, mod: '' }, recipes: { selected: null, focus: null, mod: '' } };
 let visState = {};            // id -> "done" | "open" | "locked" (visible ids only)
@@ -63,11 +65,6 @@ function esc(s) {
 }
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const modName = (m) => String(m || '').replace(/^nc_/, '').replace(/_/g, ' ');
-function hue(str) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-  return h;
-}
 function keyKind(k) {
   if (/^toolcap:/.test(k)) return 'toolcap';
   if (/^group:/.test(k)) return 'group';
@@ -242,7 +239,7 @@ function render() {
       label: hide ? '???' : cap(n.text),
       sub: hide ? '' : (T.dupe.has(id) ? n.info.name : modName(n.mod)),
       weight: T.children.get(id).filter((e) => !e.back).length,
-      hue: hue(String(n.mod)),
+      color: modColor(n.mod, cvd),
     };
   });
   const how = web.update(kind, nodes, links, rings);
@@ -329,7 +326,7 @@ function renderIntro() {
     + '<li><span class="swatch open"></span>Within reach now</li>'
     + '<li><span class="swatch locked"></span>Locked (needs more)</li>'
     + '<li><span class="line anc"></span>The quickest way to the selection</li>'
-    + '<li><span class="line desc"></span>What the selection leads to</li></ul>'
+    + '<li><span class="line desc"></span>What the selection leads to (dashed)</li></ul>'
     + '<p class="sub">Only the earliest way to each requirement is drawn; the panel lists them all. Steps that loop back to earlier ones are marked <em>(loop)</em>. Bigger dots lead to more things.</p>'
     + '<h3>About the data</h3><ul class="meta-list">'
     + `<li>${m.count} ${L().noun}${m.recipes ? ` · ${m.recipes} ways of making things` : ''}</li>`
@@ -527,6 +524,18 @@ function wire() {
   $('modFilter').addEventListener('change', (ev) => { V().mod = ev.target.value; V().focus = null; render(); setTimeout(() => web.fit(), 700); });
   document.querySelectorAll('.seg [data-kind]').forEach((b) => b.addEventListener('click', () => setKind(b.dataset.kind)));
 
+  const cv = $('cvd');
+  cv.innerHTML = FORMS.map(([k, label]) => `<option value="${k}">${esc(label)}</option>`).join('');
+  cv.value = cvd;
+  cv.addEventListener('change', () => {
+    cvd = cv.value;
+    save(STORE_CVD, cvd);
+    applyForm(cvd);
+    render();
+  });
+  // the meaning colours differ between light and dark pages
+  if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyForm(cvd); render(); });
+
   const sp = $('spoilers');
   sp.checked = spoilers;
   sp.addEventListener('change', () => {
@@ -581,6 +590,8 @@ async function getJSON(url) {
     base.curated = curated;
     for (const k of ['hints', 'recipes']) discovered[k] = new Set(load(storeDisc(k), k === 'hints' ? load('nc-tree:discovered', []) : []));
     spoilers = !!load(STORE_SPOIL, true);
+    cvd = FORMS.some(([k]) => k === load(STORE_CVD, 'normal')) ? load(STORE_CVD, 'normal') : 'normal';
+    applyForm(cvd);
     const m = /^#(hints|recipes)(?:\/(.+))?$/.exec(location.hash);
     const legacy = !m && location.hash.length > 1 ? decodeURIComponent(location.hash.slice(1)) : null;
     kind = m ? m[1] : legacy ? 'hints' : (load(STORE_KIND, 'hints') === 'recipes' ? 'recipes' : 'hints');
