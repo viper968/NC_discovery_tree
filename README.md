@@ -3,12 +3,15 @@ a discovery tree for nodecore (a game on Luanti) which gives you insight into wh
 
 ## The viewer
 
-`index.html` is a static page (no build step) with two trees over the game:
+`index.html` is a static page (no build step) that draws the game as a node
+web: a force-directed graph ([d3-force](https://d3js.org/d3-force)) where each
+dot is a hint or an item, arrows run to what it leads to, and early things
+drift to the middle. Pan, zoom (names appear as you zoom in), drag dots about.
+Bigger dots lead to more things; colour is the mod. There are two trees:
 
 - **Hints**: NodeCore's in-game hints, chained from what each needs to what
   it unlocks (`data/nodecore-discovery.json`).
-- **Recipes**: every item, laid out by how many steps it takes to get, with
-  every way of making it: NodeCore's in-world recipes (`nc.register_craft`:
+- **Recipes**: every item, with every way of making it: NodeCore's in-world recipes (`nc.register_craft`:
   pummel, press, place, cook...), Luanti's grid and furnace crafts, digging
   and the drops it gives, and NodeCore's changes of state (stone digs into
   cobble, glowing lode cools or is quenched, tools wear out...). Tools count
@@ -17,15 +20,15 @@ a discovery tree for nodecore (a game on Luanti) which gives you insight into wh
 
 Both trees share the same controls:
 
-- **Click a card** to see what it needs (every way, with what provides each
+- **Click a dot** to see what it needs (every way, with what provides each
   part) and what it leads to.
 - **Show the quickest way here** trims the map to the cheapest route to it.
-- **Mod filter** shows one mod's cards plus the quickest way to each.
+- **Mod filter** shows one mod's dots plus the quickest way to each.
 - **Spoilers mode** (on by default) hides everything you haven't reached.
-  You start with what's within reach on day one; clicking a card marks it
-  done and reveals what it leads to. `???` cards need more first. Progress is
+  You start with what's within reach on day one; clicking a dot marks it
+  done and the web grows out with what it leads to. `?` dots need more first. Progress is
   kept per tree in your browser.
-- Search, zoom (buttons or Ctrl+scroll), drag to pan, and links to a card
+- Search, and links to a dot
   (`#hints/<id>` or `#recipes/item:<name>`).
 
 ## Mods
@@ -54,7 +57,7 @@ The recipe tree is read from what mods *register*. Things done purely by
 game code (ABMs and callbacks: lux charging, drying rushes, trees growing)
 aren't recipes, so:
 
-- An item only game code makes sits in the **Out of reach** column.
+- An item only game code makes is marked **Out of reach**.
 - Something only ever dug or decayed into being, with no recipe behind it
   (leaves, loose lux cobble), is marked *found in the world (assumed)*.
 - Hints mods add are linked automatically, by the same key expansion
