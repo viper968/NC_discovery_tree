@@ -4,7 +4,8 @@ a discovery tree for nodecore (a game on Luanti) which gives you insight into wh
 ## The viewer
 
 `index.html` is a static page (no build step) that draws the game as a node
-web: a force-directed graph ([d3-force](https://d3js.org/d3-force)) where each
+web: a force-directed graph ([d3-force](https://d3js.org/d3-force), shipped in
+`vendor/d3/` so the page needs no CDN) where each
 dot is a hint or an item, arrows run to what it leads to, and early things
 drift to the middle. Pan, zoom (names appear as you zoom in), drag dots about.
 Bigger dots lead to more things; colour is the mod. There are two trees:
@@ -47,19 +48,53 @@ Installed mods are kept in the browser (IndexedDB) and load again on the
 next visit. The panel shows what each added, and any errors or missing
 dependencies.
 
+Running mods takes a few seconds, so the result is cached in the browser
+too, once per **combination of mods**. It is keyed on a fingerprint of
+every installed mod's files (so an update, or a different zip of the
+"same" version, counts as a change), the loader's version and Lua, and
+NodeCore's bundled code; reloading the page with the same mods, or going
+back to a set used before, is instant. A single mod's results can't be
+cached alone, because mods run together and change one another (NodeCore's
+"flammables ignite" lights NodeCore Light's lanterns). The last six
+combinations are kept; **Run again** in the Mods panel ignores the cache.
+The trees are rebuilt from the cached extract each time, so changes to how
+they are drawn never need a recompute; bump `EXTRACT_VERSION` in
+`loader/extract.js` when what an extract holds changes.
+
 This reuses the mod-installing code from
 [nodecore_light_logic_sim](https://github.com/viper968/nodecore_light_logic_sim)
 (`claude/nodecore-mods` branch); `loader/README.md` lists what came from where.
 
+### Changes made by game code (ABMs)
+
+Much of NodeCore happens without a recipe: concrete wets beside water,
+sets and cures; glowing lode cools; torches catch from embers and burn
+down; peat composts into humus. These are ABMs (and item-stack ABMs for
+things lying in piles or carried), which are Lua functions, not data. So
+the loader **probes** them: it puts each block or stack an ABM applies to
+in a small pretend world, alone and then beside each neighbour the ABM
+asks for (or water, fire, lava, lux or dirt for those that check in code),
+runs the ABM's own Lua for a while with the game clock running fast, and
+records what the block turns into. Those changes become steps in the
+recipe tree, marked *Over time*, with the neighbour as a requirement
+("beside it: any of Water…"). For cloudstone that gives crude glass +
+ash → spackling → wet spackling (beside water) → pliant cloudstone →
+cloudstone.
+
+NodeCore's own ABMs are probed once, into `data/nodecore-extract.json`
+(`node tools/extract-cli.mjs --probe-abms`, about 20 s). In the page only
+what added mods bring is probed, which adds a few seconds when mods load.
+
 ### What it can't see
 
-The recipe tree is read from what mods *register*. Things done purely by
-game code (ABMs and callbacks: lux charging, drying rushes, trees growing)
-aren't recipes, so:
-
-- An item only game code makes is marked **Out of reach**.
-- Something only ever dug or decayed into being, with no recipe behind it
-  (leaves, loose lux cobble), is marked *found in the world (assumed)*.
+- Things only a player action starts (carving a pattern into pliant
+  concrete with a stylus, right-clicking coal onto aggregate, lighting the
+  first fire by rubbing sticks) or that need an arrangement the probe
+  doesn't build (lux cobble charging from lux around it, lanterns
+  charging). An item only that kind of code makes is marked **Out of reach**.
+- When a whole chain only starts from such a thing (fire, say), one item
+  in it is marked *Assumed available*, so the rest can be reached. A guess
+  is never allowed to make something already reachable come cheaper.
 - Hints mods add are linked automatically, by the same key expansion
   NodeCore's `expandkey()` uses. NodeCore's own hints keep the hand-checked
   links from `data/nodecore-discovery.json`.

@@ -11,12 +11,39 @@ import { downloadPackage, ManualDownload } from './loader/sources.js';
 import { ModStore, recordFiles } from './loader/store.js';
 import { readZip } from './loader/zip.js';
 import { openPackage } from './loader/package.js';
-import { NODECORE_MOD_NAMES } from './loader/extract.js';
+import { NODECORE_MOD_NAMES, EXTRACT_VERSION } from './loader/extract.js';
+import { ExtractCache, extractKey, digest } from './loader/cache.js';
 
 const $ = (id) => document.getElementById(id);
 // this page only runs a mod's code, so its textures, models and sounds are skipped
 const codeOnly = (path) => !/(^|\/)\.git/.test(path) && /\.(lua|conf|txt|csv|json)$/i.test(path);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** What the loader is: its version and fingerprints of its Lua and NodeCore's (worked out once). */
+let loaderParts = null;
+function loaderFingerprint() {
+  if (!loaderParts) {
+    loaderParts = (async () => {
+      const bytes = async (path) => {
+        const res = await fetch(new URL(path, import.meta.url));
+        if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+        return new Uint8Array(await res.arrayBuffer());
+      };
+      const [lua, game] = await Promise.all([bytes('./loader/extract.lua'), bytes('./data/nodecore-src.zip')]);
+      return [`v${EXTRACT_VERSION}`, await digest([lua]), await digest([game])];
+    })();
+    loaderParts.catch(() => { loaderParts = null; });
+  }
+  return loaderParts;
+}
+
+const ago = (t) => {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s / 60)} minutes ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} hours ago`;
+  return `${Math.round(s / 86400)} days ago`;
+};
 
 /** Run packages with NodeCore off the main thread (or on it, if workers fail). */
 function runPackages(packages) {
@@ -42,6 +69,7 @@ function runPackages(packages) {
 
 export function initMods({ apply, openFromDetails }) {
   const store = new ModStore();
+  const cache = new ExtractCache();
   const cdb = new ContentDB();
   const panel = $('modsPanel');
   const status = $('modsStatus');
@@ -105,7 +133,20 @@ export function initMods({ apply, openFromDetails }) {
     renderInstalled();
   }
 
-  async function run() {
+  function summary(out) {
+    const bad = out.mods.filter((m) => !m.ok && out.addons.includes(m.name)).length + Object.keys(out.missing).length;
+    return {
+      text: `${Object.keys(out.items).length} items, ${out.nc_recipes.length + out.crafts.length} recipes, ${out.hints.length} hints.`
+        + (bad ? ' Some mods had problems — see below.' : ''),
+      kind: bad ? 'warn' : 'ok',
+    };
+  }
+
+  /**
+   * Run NodeCore with the installed mods, or reuse what was worked out
+   * last time for exactly these files (`force` runs them regardless).
+   */
+  async function run({ force = false } = {}) {
     if (!packages.length) {
       lastRun = null;
       apply(null);
@@ -114,16 +155,28 @@ export function initMods({ apply, openFromDetails }) {
       return;
     }
     busy = true;
-    say(`<span class="spin"></span> Running NodeCore with ${packages.length} mod package${packages.length > 1 ? 's' : ''}…`);
     try {
+      const pkgs = packages.map((p) => ({ key: p.key, files: recordFiles(p), meta: { name: p.name, title: p.title, author: p.author } }));
+      let key = null;
+      try { key = await extractKey(pkgs, await loaderFingerprint()); } catch { /* no fingerprint: just run */ }
+      const hit = key && !force ? await cache.get(key) : undefined;
+      if (hit && hit.out) {
+        lastRun = hit.out;
+        apply(lastRun);
+        const sum = summary(lastRun);
+        say(`Loaded from this browser's cache (worked out ${ago(hit.saved)}${hit.seconds ? `, which took ${hit.seconds.toFixed(1)} s` : ''}). `
+          + `${sum.text} <button class="linkish" data-recompute>Run again</button>`, sum.kind);
+        cache.put(key, hit.out, hit.seconds);    // (keeps it among the recent ones)
+        return;
+      }
+      say(`<span class="spin"></span> Running NodeCore with ${packages.length} mod package${packages.length > 1 ? 's' : ''}…`);
       const t = performance.now();
-      const input = packages.map((p) => ({ files: recordFiles(p), meta: { name: p.name, title: p.title, author: p.author } }));
-      lastRun = await runPackages(input);
+      lastRun = await runPackages(pkgs.map(({ files, meta }) => ({ files, meta })));
+      const seconds = (performance.now() - t) / 1000;
       apply(lastRun);
-      const bad = lastRun.mods.filter((m) => !m.ok && lastRun.addons.includes(m.name)).length + Object.keys(lastRun.missing).length;
-      say(`Ran ${lastRun.order.length} mods in ${((performance.now() - t) / 1000).toFixed(1)} s. `
-        + `${Object.keys(lastRun.items).length} items, ${lastRun.nc_recipes.length + lastRun.crafts.length} recipes, ${lastRun.hints.length} hints.`
-        + (bad ? ' Some mods had problems — see below.' : ''), bad ? 'warn' : 'ok');
+      const saved = key ? await cache.put(key, lastRun, seconds) : false;
+      const sum = summary(lastRun);
+      say(`Ran ${lastRun.order.length} mods in ${seconds.toFixed(1)} s${saved ? ' (kept for next time)' : ''}. ${sum.text}`, sum.kind);
     } catch (e) {
       say(`Running the mods failed: <code>${esc(e.message)}</code>`, 'error');
     } finally {
@@ -211,6 +264,7 @@ export function initMods({ apply, openFromDetails }) {
     if (ins) { ins.disabled = true; install(ins.dataset.install); return; }
     const rm = ev.target.closest('[data-remove]');
     if (rm && !busy) { await store.delete(rm.dataset.remove); await refresh(); await run(); searchCDB($('cdbQuery').value); return; }
+    if (ev.target.closest('[data-recompute]') && !busy) { run({ force: true }); return; }
     const find = ev.target.closest('[data-find]');
     if (find) { $('cdbQuery').value = find.dataset.find; searchCDB(find.dataset.find); }
   });

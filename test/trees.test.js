@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { runPackages } from '../loader/extract.js';
+import { runPackages, mergeProbes } from '../loader/extract.js';
 import { hintTreeFromCurated, hintTreeFromExtract, recipeTreeFromExtract } from '../loader/graphs.js';
 
 const json = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url)));
@@ -75,4 +75,61 @@ test('a mod without hints still adds its recipes', async () => {
   assert.ok(brick && !brick.unreachable);
   assert.equal(brick.mod, 'testmod');
   assert.ok(brick.tier >= 1);
+});
+
+test('the bundled extract has NodeCore\'s ABMs probed, and cloudstone has its real chain', () => {
+  assert.ok((bundled.abm_changes || []).length > 100);
+  const t = byId(recipeTreeFromExtract(bundled));
+  const tier = (n) => t.get(`item:${n}`).tier;
+  const chain = ['nc_concrete:cloudmix', 'nc_concrete:cloudmix_wet_source', 'nc_concrete:concrete_cloudstone_blank_ply', 'nc_concrete:cloudstone'];
+  for (let i = 1; i < chain.length; i++) assert.ok(tier(chain[i - 1]) < tier(chain[i]), `${chain[i - 1]} before ${chain[i]}`);
+  const cs = t.get('item:nc_concrete:cloudstone');
+  assert.ok(!cs.unreachable && !cs.info.assumed && cs.req.op !== 'always');
+  // wetting needs water beside it
+  const wet = JSON.stringify(t.get('item:nc_concrete:cloudmix_wet_source').req);
+  assert.match(wet, /nc_terrain:water_source/);
+});
+
+test('guesses never make something forged come cheaper', () => {
+  const t = byId(recipeTreeFromExtract(bundled));
+  const tier = (n) => t.get(`item:${n}`).tier;
+  assert.ok(tier('nc_lode:prill_hot') > tier('nc_woodwork:plank'));
+  assert.ok(tier('nc_lode:tool_pick_tempered') > tier('nc_lode:prill_hot'));
+  for (const n of t.values()) {
+    if (n.info.assumed) assert.ok(!/tool_|toolhead_/.test(n.info.name), `${n.info.name} assumed`);
+  }
+});
+
+test('a mod whose only crafting is an ABM shows up in the recipe tree', async () => {
+  const enc = new TextEncoder();
+  const lua = `
+    core.register_node("abmmod:raw", {description = "Raw Thing", groups = {crumbly = 1}})
+    core.register_node("abmmod:soaked", {description = "Soaked Thing", groups = {crumbly = 1}})
+    nc.register_craft({label = "make raw thing", action = "pummel", toolgroups = {thumpy = 1},
+      nodes = {{match = "nc_terrain:sand_loose", replace = "abmmod:raw"}}})
+    core.register_abm({label = "soak raw thing", nodenames = {"abmmod:raw"}, neighbors = {"group:water"},
+      interval = 1, chance = 1, action = function(pos) core.set_node(pos, {name = "abmmod:soaked"}) end})`;
+  const files = new Map([['abmmod/init.lua', enc.encode(lua)], ['abmmod/mod.conf', enc.encode('name = abmmod\ndepends = nc_terrain')]]);
+  const out = mergeProbes(await runPackages([{ files }]), bundled);
+  const c = out.abm_changes.find((x) => x.from === 'abmmod:raw' && x.to === 'abmmod:soaked');
+  assert.ok(c, 'the ABM was probed');
+  assert.match(c.with || '', /water/);
+  // NodeCore's own probes are merged back in
+  assert.ok(out.abm_changes.some((x) => x.to === 'nc_concrete:cloudstone'));
+  const t = byId(recipeTreeFromExtract(out));
+  const soaked = t.get('item:abmmod:soaked');
+  assert.ok(soaked && !soaked.unreachable);
+  assert.ok(soaked.tier > t.get('item:abmmod:raw').tier);
+});
+
+test('cached mod results are keyed on the files themselves, the set of mods and the loader', async () => {
+  const { extractKey } = await import('../loader/cache.js');
+  const enc = new TextEncoder();
+  const pkg = (key, text) => ({ key, files: new Map([[`${key}/init.lua`, enc.encode(text)], [`${key}/mod.conf`, enc.encode(`name = ${key}`)]]) });
+  const loader = ['v1', 'lua', 'game'];
+  const a = await extractKey([pkg('a', 'x = 1'), pkg('b', 'y = 2')], loader);
+  assert.equal(a, await extractKey([pkg('b', 'y = 2'), pkg('a', 'x = 1')], loader), 'order of install does not matter');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 2'), pkg('b', 'y = 2')], loader), 'a changed file');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 1')], loader), 'a mod removed');
+  assert.notEqual(a, await extractKey([pkg('a', 'x = 1'), pkg('b', 'y = 2')], ['v2', 'lua', 'game']), 'a new loader');
 });
