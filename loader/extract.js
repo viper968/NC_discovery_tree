@@ -60,7 +60,7 @@ export async function nodecoreMods() {
  * files: Map}) together. Returns the parsed extract with `order` and
  * `missing` (mods left out for a missing dependency) added.
  */
-export async function extract(mods) {
+export async function extract(mods, { probeAbms = false } = {}) {
   const { lua, lauxlib, lualib, to_luastring } = await loadFengari();
   const { order, missing } = loadOrder(mods);
   const fs = new Map();
@@ -112,6 +112,8 @@ export async function extract(mods) {
     lua.lua_setfield(L, -2, to_luastring(m.name));
   }
   lua.lua_setglobal(L, to_luastring('MOD_PATHS'));
+  lua.lua_pushboolean(L, probeAbms);
+  lua.lua_setglobal(L, to_luastring('PROBE_ABMS'));
 
   const src = to_luastring(await readLocal('./extract.lua'));
   if (lauxlib.luaL_loadbufferx(L, src, src.length, to_luastring('=extract'), null) !== 0
@@ -129,13 +131,13 @@ export async function extract(mods) {
  * modpacks, as ContentDB serves them), run together. `addons` in the
  * result names the added mods.
  */
-export async function runPackages(packages) {
+export async function runPackages(packages, opts = {}) {
   const added = [];
   for (const p of packages) added.push(...openPackage(p.files, p.meta || {}).mods);
   const names = new Set(added.map((m) => m.name));
   // a mod named like one of NodeCore's own replaces it, as in Luanti
   const base = (await nodecoreMods()).filter((m) => !names.has(m.name));
-  const out = await extract([...base, ...added]);
+  const out = await extract([...base, ...added], opts);
   out.addons = added.map((m) => m.name);
   return out;
 }

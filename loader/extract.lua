@@ -10,6 +10,7 @@
 --   __listdir(path, dirs) -> {names}
 --   MOD_LIST  = {"modname", ...} in load order
 --   MOD_PATHS = {modname = "/mods/modname"}
+--   PROBE_ABMS = true to try every ABM on the blocks it applies to (prototype)
 
 ---------------------------------------------------------------------------
 -- Lua 5.1 / LuaJIT compatibility (mods are written for LuaJIT)
@@ -604,6 +605,170 @@ CURRENT_MOD = nil
 run_afters()
 for _, f in ipairs(core.registered_on_mods_loaded) do pcall(f) end
 run_afters()
+
+---------------------------------------------------------------------------
+-- Probing ABMs: run each one on a block it applies to, in a tiny pretend
+-- world holding the neighbours it asks for, and note what the block (or
+-- anything beside it) turns into. That catches the changes game code makes
+-- (concrete wetting and curing, lode cooling, ...) that no recipe lists.
+
+local probe_world, probe_meta, probe_changes, probe_drops = {}, {}, {}, {}
+local probe_spot = 0
+local function pkey(p) return math.floor(p.x + 0.5) .. "," .. math.floor(p.y + 0.5) .. "," .. math.floor(p.z + 0.5) end
+local function groupof(name, g)
+  local d = core.registered_items[name]
+  return d and d.groups and d.groups[g] or 0
+end
+local function matches(name, spec)
+  if type(spec) == "string" then spec = {spec} end
+  if type(spec) ~= "table" then return false end
+  for _, s in ipairs(spec) do
+    if s == name then return true end
+    if type(s) == "string" and s:sub(1, 6) == "group:" then
+      local ok = true
+      for g in s:sub(7):gmatch("[^,]+") do if (tonumber(groupof(name, g)) or 0) <= 0 then ok = false end end
+      if ok then return true end
+    end
+  end
+  return false
+end
+local function expand(spec)
+  local out = {}
+  for name, def in pairs(core.registered_nodes) do
+    if name ~= "air" and name ~= "ignore" and matches(name, spec) then out[#out + 1] = name end
+  end
+  table.sort(out)
+  return out
+end
+
+local function setnode(pos, node)
+  local k = pkey(pos)
+  local old = probe_world[k] and probe_world[k].name or "air"
+  local name = type(node) == "table" and node.name or node
+  probe_world[k] = {name = name, param2 = type(node) == "table" and node.param2 or 0}
+  if name ~= old then probe_changes[#probe_changes + 1] = {pos = k, from = old, to = name} end
+end
+local real = {}
+for _, f in ipairs({"get_node", "get_node_or_nil", "set_node", "swap_node", "add_node", "remove_node",
+  "find_node_near", "find_nodes_in_area", "get_meta", "add_item", "get_node_light", "get_natural_light",
+  "get_gametime", "get_item_group"}) do real[f] = core[f] end
+
+local function probe_api(on)
+  if not on then for k, v in pairs(real) do core[k] = v end return end
+  core.get_node = function(p) return probe_world[pkey(p)] or {name = "air", param2 = 0} end
+  core.get_node_or_nil = core.get_node
+  core.set_node = setnode
+  core.swap_node = setnode
+  core.add_node = setnode
+  core.remove_node = function(p) setnode(p, {name = "air"}) end
+  core.add_item = function(p, item)
+    local n = type(item) == "string" and item:match("^(%S+)") or (type(item) == "table" and item.get_name and item:get_name())
+    if n and n ~= "" then probe_drops[#probe_drops + 1] = n end
+  end
+  core.get_node_light = function() return 15 end
+  core.get_natural_light = function() return 15 end
+  core.get_item_group = groupof
+  local function within(minp, maxp, names)
+    local out = {}
+    for k, n in pairs(probe_world) do
+      local x, y, z = k:match("(-?%d+),(-?%d+),(-?%d+)")
+      x, y, z = tonumber(x), tonumber(y), tonumber(z)
+      if x >= minp.x and x <= maxp.x and y >= minp.y and y <= maxp.y and z >= minp.z and z <= maxp.z
+        and matches(n.name, names) then out[#out + 1] = vector.new(x, y, z) end
+    end
+    return out
+  end
+  core.find_nodes_in_area = function(a, b, names)
+    local minp, maxp = vector.sort(a, b)
+    return within(minp, maxp, names)
+  end
+  core.find_node_near = function(p, r, names)
+    return within(vector.subtract(p, r), vector.add(p, r), names)[1]
+  end
+  core.get_meta = function(p)
+    local k = pkey(p)
+    probe_meta[k] = probe_meta[k] or {}
+    local m = probe_meta[k]
+    return setmetatable({
+      get_string = function(_, f) return m[f] and tostring(m[f]) or "" end,
+      set_string = function(_, f, v) m[f] = v end,
+      get_int = function(_, f) return math.floor(tonumber(m[f]) or 0) end,
+      set_int = function(_, f, v) m[f] = v end,
+      get_float = function(_, f) return tonumber(m[f]) or 0 end,
+      set_float = function(_, f, v) m[f] = v end,
+      contains = function(_, f) return m[f] ~= nil end,
+      to_table = function() return {fields = m, inventory = {}} end,
+      from_table = function() end,
+      mark_as_private = function() end,
+    }, anymeta)
+  end
+end
+
+local function probe_abm(def, budget)
+  local found = {}
+  local subjects = expand(def.nodenames)
+  if #subjects > 60 then return found, #subjects end
+  local hoods = {false}
+  if def.neighbors then
+    hoods = {}
+    for _, n in ipairs(expand(def.neighbors)) do hoods[#hoods + 1] = n end
+    if #hoods > 6 then hoods = {hoods[1], hoods[2], hoods[3]} end
+  end
+  for _, subject in ipairs(subjects) do
+    for _, hood in ipairs(hoods) do
+      for trial = 1, 3 do
+        probe_world, probe_meta, probe_changes, probe_drops = {}, {}, {}, {}
+        -- a fresh spot each time: NodeCore caches some state by position
+        probe_spot = probe_spot + 1
+        local ox = probe_spot * 16
+        local origin = vector.new(ox, 0, 0)
+        local here = pkey(origin)
+        probe_world[here] = {name = subject, param2 = 0}
+        if hood then probe_world[pkey(vector.new(ox + 1, 0, 0))] = {name = hood, param2 = 0} end
+        -- a solid floor, so nothing falls out of the pretend world
+        probe_world[pkey(vector.new(ox, -1, 0))] = {name = "nc_terrain:stone", param2 = 0}
+        local ticks = 0
+        debug.sethook(function() ticks = ticks + 1 if ticks > budget then error("probe budget") end end, "", 10000)
+        for step = 1, 60 do
+          -- (the game clock: soaking ABMs measure progress by it)
+          nc.gametime = (rawget(nc, "gametime") or 0) + 10
+          local node = probe_world[here]
+          if not node or node.name ~= subject then break end
+          pcall(def.action, origin, {name = node.name, param2 = node.param2}, 1, 1)
+        end
+        debug.sethook()
+        for _, c in ipairs(probe_changes) do
+          if c.pos == here and c.from == subject and c.to ~= subject then
+            found[subject .. ">" .. c.to .. ">" .. tostring(hood)] = {from = subject, to = c.to, with = hood or nil, label = def.label}
+          end
+        end
+        for _, d in ipairs(probe_drops) do
+          found[subject .. ">" .. d .. ">drop"] = {from = subject, to = d, with = hood or nil, label = def.label, drop = true}
+        end
+      end
+    end
+  end
+  return found, #subjects
+end
+
+local abm_found, abm_skipped = {}, {}
+-- (a prototype, off unless asked for: it takes loading from ~3 s to ~15 s)
+if PROBE_ABMS then
+probe_api(true)
+for _, def in ipairs(core.registered_abms) do
+  if type(def) == "table" and type(def.action) == "function" then
+    local ok, found, n = pcall(probe_abm, def, 400)
+    if ok then
+      for _, f in pairs(found) do abm_found[#abm_found + 1] = f end
+      if n and n > 60 then abm_skipped[#abm_skipped + 1] = {label = def.label, nodes = n} end
+    end
+  end
+end
+probe_api(false)
+debug.sethook()
+end
+results.abm_changes = abm_found
+results.abm_skipped = abm_skipped
 
 ---------------------------------------------------------------------------
 -- Read back what was registered, as JSON
