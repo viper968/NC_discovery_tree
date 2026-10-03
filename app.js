@@ -507,6 +507,7 @@ function clickNode(id) {
 }
 
 function wire() {
+  if (!window.d3) throw new Error('the graph library (vendor/d3/d3.min.js) did not load');
   web = new WebView(viewport, { click: clickNode, background: () => select(null) });
   details.addEventListener('click', (ev) => {
     const go = ev.target.closest('[data-go]');
@@ -592,10 +593,18 @@ async function getJSON(url) {
       openFromDetails: (fn) => details.addEventListener('click', (ev) => { if (ev.target.closest('[data-open-mods]')) fn(); }),
     });
   } catch (err) {
-    const el = $('loading');
-    if (!el) { console.error(err); return; }
+    console.error(err);
+    // say what went wrong where the tree should be, whatever stage it failed at
+    let el = $('loading');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'loading';
+      el.className = 'loading';
+      viewport.appendChild(el);
+    }
     el.classList.add('error');
-    el.textContent = `Couldn't load the discovery data (${err.message}). `
-      + (location.protocol === 'file:' ? 'Browsers block this when opening the file directly — serve the folder, e.g. `python3 -m http.server`.' : '');
+    el.textContent = location.protocol === 'file:'
+      ? 'Browsers block loading the data when the page is opened as a file. Serve the folder instead, e.g. `python3 -m http.server`.'
+      : `The tree couldn't be drawn: ${err.message}. Try a hard refresh (Ctrl+Shift+R); if it keeps happening, please report this message.`;
   }
 })();

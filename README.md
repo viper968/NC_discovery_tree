@@ -4,7 +4,8 @@ a discovery tree for nodecore (a game on Luanti) which gives you insight into wh
 ## The viewer
 
 `index.html` is a static page (no build step) that draws the game as a node
-web: a force-directed graph ([d3-force](https://d3js.org/d3-force)) where each
+web: a force-directed graph ([d3-force](https://d3js.org/d3-force), shipped in
+`vendor/d3/` so the page needs no CDN) where each
 dot is a hint or an item, arrows run to what it leads to, and early things
 drift to the middle. Pan, zoom (names appear as you zoom in), drag dots about.
 Bigger dots lead to more things; colour is the mod. There are two trees:
