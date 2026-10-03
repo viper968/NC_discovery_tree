@@ -172,7 +172,7 @@ svg.web:active { cursor: grabbing; }
 .arrow.desc { fill: var(--desc); }
 .node { cursor: pointer; }
 .node .dot {
-  fill: hsl(var(--hue), 42%, 52%); stroke: var(--surface); stroke-width: 1.5;
+  fill: var(--dot, #a08060); stroke: var(--surface); stroke-width: 1.5;
   transition: opacity 0.15s;
 }
 .node .halo { fill: none; stroke: transparent; stroke-width: 3; }
@@ -196,7 +196,7 @@ svg.web.has-sel .node { opacity: var(--dim, 0.25); }
 svg.web.has-sel .node.sel, svg.web.has-sel .node.anc, svg.web.has-sel .node.desc { opacity: 1; }
 svg.web.has-sel .links line { opacity: var(--dim, 0.25); }
 svg.web.has-sel .links line.hl-anc { stroke: var(--anc); stroke-width: 2.2; opacity: 1; }
-svg.web.has-sel .links line.hl-desc { stroke: var(--desc); stroke-width: 2.2; opacity: 1; }
+svg.web.has-sel .links line.hl-desc { stroke: var(--desc); stroke-width: 2.2; opacity: 1; stroke-dasharray: 6 4; }
 .node.sel .halo { stroke: var(--accent); stroke-width: 4; stroke-dasharray: none; }
 .node.sel .label { font-weight: 700; font-size: calc(13px * min(var(--inv, 1), 3)); }
 
@@ -247,7 +247,7 @@ svg.web.has-sel .links line.hl-desc { stroke: var(--desc); stroke-width: 2.2; op
 .swatch.locked { background: var(--surface-2); border: 1px dashed var(--muted); }
 .line { width: 26px; height: 0; border-top: 2px solid; flex: none; }
 .line.anc { border-color: var(--anc); }
-.line.desc { border-color: var(--desc); }
+.line.desc { border-top-style: dashed; border-color: var(--desc); }
 .meta-list li { padding: 2px 0; color: var(--muted); font-size: 12px; }
 .details a { color: var(--accent); }
 
@@ -339,3 +339,9 @@ svg.web.has-sel .links line.hl-desc { stroke: var(--desc); stroke-width: 2.2; op
   .seg { order: 2; }
   #modFilter { max-width: 130px; }
 }
+
+#cvd {
+  max-width: 230px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit;
+}
+@media (max-width: 760px) { #cvd { max-width: 150px; } }

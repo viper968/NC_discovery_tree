@@ -135,7 +135,7 @@ export class WebView {
 
   /**
    * Show `nodes` ([{id, label, sub, state, ring, weight, hue, fresh,
-   * mystery}]) joined by `links` ([{source, target}]). Positions are kept
+   * mystery, color}]) joined by `links` ([{source, target}]). Positions are kept
    * per `key`, so switching trees and back keeps each one's shape.
    */
   update(key, nodes, links, rings) {
@@ -205,7 +205,7 @@ export class WebView {
     this.nodeSel = nodeIn.merge(node)
       .attr('class', (n) => `node ${n.state}${n.mystery ? ' mystery' : ''}${n.weight >= 6 ? ' big' : ''}${n.fresh ? ' fresh' : ''}`)
       .attr('data-id', (n) => n.id)
-      .style('--hue', (n) => n.hue);
+      .style('--dot', (n) => n.color);
     this.nodeSel.select('circle.halo').attr('r', (n) => radius(n) + 4);
     this.nodeSel.select('circle.dot').attr('r', radius);
     this.nodeSel.select('text.mark').attr('dy', '0.35em')

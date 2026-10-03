@@ -32,6 +32,25 @@ Both trees share the same controls:
 - Search, and links to a dot
   (`#hints/<id>` or `#recipes/item:<name>`).
 
+## Colour vision
+
+The **Colour vision** menu tunes the page for the seven common forms of
+colour blindness: protanopia and protanomaly (red), deuteranopia and
+deuteranomaly (green), tritanopia and tritanomaly (blue), and
+achromatopsia (no colour). For each, the colours that carry meaning
+(discovered, within reach, the quickest way, what it leads to) switch to a
+set that stays distinct for that form, and mods get colours from a palette
+chosen to stay apart for it. "Leads to" lines are always dashed and
+discovered dots carry a ✓, so nothing rests on colour alone; the mod's
+name is always shown beside its colour.
+
+The colours were chosen by search rather than by eye: candidates scored by
+OKLab colour difference after simulating each form (Machado et al. 2009,
+full strength for the -opias, 60% for the -omalies, brightness only for
+achromatopsia), with 3:1 contrast against the page. `test/cvd.test.js`
+re-measures them, so a future colour change can't quietly break a form.
+(Daltonizing the mod colours was tried too, and measured worse.)
+
 ## Mods
 
 The **Mods** button adds mods, which run as they do in game: their own
