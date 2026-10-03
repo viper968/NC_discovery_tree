@@ -28,3 +28,9 @@ and the ABM multiplexer) are turned off after their mods load, which
 takes loading from ~20 s to ~3 s and changes nothing that is read back.
 Each mod gets a budget of 300 million Lua steps, so one stuck in a loop
 is stopped and reported instead of hanging the page.
+
+With `PROBE_ABMS` set, `extract.lua` then probes ABMs and item-stack ABMs
+in a pretend world (see the main README); the engine calls they use
+(`get_node`, `set_node`, `find_node_near`, `get_meta`, ...) are swapped for
+ones backed by that world while it runs, and `ItemStack` is a working
+implementation rather than a stub.

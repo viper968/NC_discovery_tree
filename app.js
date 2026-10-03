@@ -9,6 +9,7 @@
  */
 import { hintTreeFromCurated, hintTreeFromExtract, recipeTreeFromExtract } from './loader/graphs.js';
 import { initMods } from './mods-ui.js';
+import { mergeProbes } from './loader/extract.js';
 import { WebView } from './web.js';
 
 const CURATED_URL = 'data/nodecore-discovery.json';
@@ -463,6 +464,7 @@ function fillModFilter() {
 
 /** Rebuild both trees from a registry extract (NodeCore alone, or with mods). */
 function setExtract(dump) {
+  dump = mergeProbes(dump, base.extract0);
   base.extract = dump;
   const curated = hintTreeFromCurated(base.curated);
   trees.hints = (dump.addons || []).length ? hintTreeFromExtract(dump, { curated }) : curated;
@@ -584,6 +586,7 @@ async function getJSON(url) {
     kind = m ? m[1] : legacy ? 'hints' : (load(STORE_KIND, 'hints') === 'recipes' ? 'recipes' : 'hints');
     $('loading').remove();
     wire();
+    base.extract0 = extract;
     setExtract(extract);
     const want = m && m[2] ? decodeURIComponent(m[2]) : legacy;
     if (want && visState[want]) select(want, true);

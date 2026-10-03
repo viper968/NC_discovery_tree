@@ -112,7 +112,11 @@ export async function extract(mods, { probeAbms = false } = {}) {
     lua.lua_setfield(L, -2, to_luastring(m.name));
   }
   lua.lua_setglobal(L, to_luastring('MOD_PATHS'));
-  lua.lua_pushboolean(L, probeAbms);
+  // true: probe everything; a list of mod names: only what those mods add
+  if (Array.isArray(probeAbms)) {
+    lua.lua_createtable(L, 0, probeAbms.length);
+    for (const m of probeAbms) { lua.lua_pushboolean(L, true); lua.lua_setfield(L, -2, to_luastring(m)); }
+  } else lua.lua_pushboolean(L, !!probeAbms);
   lua.lua_setglobal(L, to_luastring('PROBE_ABMS'));
 
   const src = to_luastring(await readLocal('./extract.lua'));
@@ -132,12 +136,31 @@ export async function extract(mods, { probeAbms = false } = {}) {
  * result names the added mods.
  */
 export async function runPackages(packages, opts = {}) {
+  // NodeCore's own ABMs are probed once, into the bundled extract; here only
+  // what the added mods bring needs probing (see mergeProbes)
   const added = [];
   for (const p of packages) added.push(...openPackage(p.files, p.meta || {}).mods);
   const names = new Set(added.map((m) => m.name));
   // a mod named like one of NodeCore's own replaces it, as in Luanti
   const base = (await nodecoreMods()).filter((m) => !names.has(m.name));
-  const out = await extract([...base, ...added], opts);
+  const out = await extract([...base, ...added], { ...opts, probeAbms: opts.probeAbms ?? added.map((m) => m.name) });
   out.addons = added.map((m) => m.name);
   return out;
+}
+
+/**
+ * An extract with mods added carries only the ABM changes those mods
+ * brought; add back NodeCore's own from the bundled extract.
+ */
+export function mergeProbes(dump, bundled) {
+  if (!dump || !bundled || dump === bundled) return dump;
+  const seen = new Set();
+  const all = [];
+  for (const c of [...(bundled.abm_changes || []), ...(dump.abm_changes || [])]) {
+    const k = `${c.kind}|${c.from}|${c.to}|${c.with || ''}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    all.push(c);
+  }
+  return { ...dump, abm_changes: all };
 }

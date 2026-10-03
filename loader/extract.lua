@@ -10,7 +10,8 @@
 --   __listdir(path, dirs) -> {names}
 --   MOD_LIST  = {"modname", ...} in load order
 --   MOD_PATHS = {modname = "/mods/modname"}
---   PROBE_ABMS = true to try every ABM on the blocks it applies to (prototype)
+--   PROBE_ABMS = true to try every ABM and item-stack ABM on what it applies
+--                to, or a set {modname = true} to try only what those mods add
 
 ---------------------------------------------------------------------------
 -- Lua 5.1 / LuaJIT compatibility (mods are written for LuaJIT)
@@ -226,19 +227,101 @@ end
 function string.trim(s) return (s:gsub("^%s*(.-)%s*$", "%1")) end
 function dump(x) return tostring(x) end
 
+-- A working ItemStack: name, count, wear and metadata, so code that moves
+-- stacks about (and the item-stack ABMs probed below) behaves.
+local function newmeta(store)
+  store = store or {}
+  return setmetatable({
+    get_string = function(_, f) return store[f] ~= nil and tostring(store[f]) or "" end,
+    set_string = function(_, f, v) if v == "" then store[f] = nil else store[f] = v end end,
+    get_int = function(_, f) return math.floor(tonumber(store[f]) or 0) end,
+    set_int = function(_, f, v) store[f] = v end,
+    get_float = function(_, f) return tonumber(store[f]) or 0 end,
+    set_float = function(_, f, v) store[f] = v end,
+    contains = function(_, f) return store[f] ~= nil end,
+    to_table = function() return {fields = table.copy(store), inventory = {}} end,
+    from_table = function(_, t) for k in pairs(store) do store[k] = nil end
+      for k, v in pairs(type(t) == "table" and t.fields or {}) do store[k] = v end return true end,
+    equals = function(_, o) return o == store end,
+    mark_as_private = function() end,
+    get_keys = function() local k = {} for f in pairs(store) do k[#k + 1] = f end return k end,
+  }, anymeta), store
+end
+local stackmeta = {}
+stackmeta.__index = stackmeta
+local function stackdef(st) return core.registered_items[st.name] or {} end
+function stackmeta:get_name() return self.name end
+function stackmeta:set_name(n) self.name = n or "" if self.name == "" then self.count = 0 end return true end
+function stackmeta:get_count() return self.name == "" and 0 or self.count end
+function stackmeta:set_count(c) self.count = math.max(0, math.floor(c or 0)) if self.count == 0 then self.name = "" end return true end
+function stackmeta:get_wear() return self.wear end
+function stackmeta:set_wear(w) self.wear = w or 0 return true end
+function stackmeta:add_wear(w) self.wear = self.wear + (w or 0) if self.wear >= 65536 then self:clear() end return true end
+function stackmeta:is_empty() return self.name == "" or self.count <= 0 end
+function stackmeta:clear() self.name, self.count, self.wear = "", 0, 0 return true end
+function stackmeta:get_meta() return self.meta end
+function stackmeta:get_metadata() return "" end
+function stackmeta:get_definition() return stackdef(self) end
+function stackmeta:get_stack_max() return tonumber(stackdef(self).stack_max) or 99 end
+function stackmeta:get_free_space() return self:get_stack_max() - self:get_count() end
+function stackmeta:is_known() return core.registered_items[self.name] ~= nil end
+function stackmeta:get_tool_capabilities()
+  return stackdef(self).tool_capabilities or (core.registered_items[""] or {}).tool_capabilities or {groupcaps = {}}
+end
+function stackmeta:get_description() return stackdef(self).description or self.name end
+function stackmeta:get_short_description() return self:get_description() end
+function stackmeta:to_string()
+  if self:is_empty() then return "" end
+  return self.name .. (self.count ~= 1 and (" " .. self.count) or "") .. (self.wear ~= 0 and (" " .. self.wear) or "")
+end
+function stackmeta:to_table() if self:is_empty() then return nil end return {name = self.name, count = self.count, wear = self.wear} end
+function stackmeta:peek_item(n) local t = ItemStack(self) t:set_count(math.min(n or 1, self:get_count())) return t end
+function stackmeta:take_item(n)
+  n = math.min(n or 1, self:get_count())
+  local t = ItemStack(self)
+  t:set_count(n)
+  self:set_count(self:get_count() - n)
+  return t
+end
+function stackmeta:item_fits(o)
+  o = ItemStack(o)
+  return self:is_empty() or (o.name == self.name and self:get_free_space() >= o:get_count())
+end
+function stackmeta:add_item(o)
+  o = ItemStack(o)
+  if o:is_empty() then return o end
+  if self:is_empty() then self.name, self.count, self.wear = o.name, o.count, o.wear return ItemStack("") end
+  if o.name ~= self.name then return o end
+  local fit = math.min(self:get_free_space(), o:get_count())
+  self.count = self.count + fit
+  o:set_count(o:get_count() - fit)
+  return o
+end
+function stackmeta:replace(o)
+  o = ItemStack(o)
+  self.name, self.count, self.wear = o.name, o.count, o.wear
+  return true
+end
+function stackmeta:equals(o) o = ItemStack(o) return o.name == self.name and o.count == self.count and o.wear == self.wear end
+stackmeta.__tostring = function(st) return st:to_string() end
 ItemStack = function(s)
-  local name = type(s) == "string" and s:match("^(%S+)") or (type(s) == "table" and s.name) or ""
-  local count = type(s) == "string" and tonumber(s:match("^%S+%s+(%d+)")) or (type(s) == "table" and s.count) or 1
-  local st = {name = name}
-  return setmetatable(st, {__index = function(t, k)
-    if k == "get_name" then return function() return name end end
-    if k == "is_empty" then return function() return name == "" end end
-    if k == "get_count" then return function() return count end end
-    if k == "to_string" then return function() return name end end
-    if k == "get_definition" then return function() return core.registered_items[name] or {} end end
-    if k == "get_meta" then return function() return anyfn() end end
-    return function() return anyfn() end
-  end})
+  local st = setmetatable({name = "", count = 0, wear = 0}, stackmeta)
+  local store
+  if getmetatable(s) == stackmeta then
+    st.name, st.count, st.wear = s.name, s.count, s.wear
+    store = table.copy(s.store or {})
+  elseif type(s) == "string" then
+    local n, c, w = s:match("^(%S+)%s*(%d*)%s*(%d*)")
+    if n then st.name, st.count, st.wear = n, tonumber(c) or 1, tonumber(w) or 0 end
+  elseif type(s) == "table" then
+    st.name = type(s.name) == "string" and s.name or ""
+    st.count = tonumber(s.count) or (st.name ~= "" and 1 or 0)
+    st.wear = tonumber(s.wear) or 0
+  end
+  st.name = st.name:gsub("^:", "")
+  if st.name == "" then st.count = 0 end
+  st.meta, st.store = newmeta(store)
+  return st
 end
 VoxelArea = setmetatable({}, anymeta)
 PseudoRandom = function() return setmetatable({next = function() return 1 end}, anymeta) end
@@ -399,7 +482,10 @@ core.unregister_item = function(name)
   core.registered_tools[name] = nil core.registered_craftitems[name] = nil
 end
 core.register_entity = function(name, def) core.registered_entities[name:gsub("^:", "")] = def end
-core.register_abm = function(def) core.registered_abms[#core.registered_abms+1] = def end
+core.register_abm = function(def)
+  if type(def) == "table" then def.__mod = def.__mod or CURRENT_MOD end
+  core.registered_abms[#core.registered_abms+1] = def
+end
 local plain_register_abm = core.register_abm
 core.register_lbm = function(def) core.registered_lbms[#core.registered_lbms+1] = def end
 core.register_chatcommand = function(n, def) core.registered_chatcommands[n] = def end
@@ -424,6 +510,8 @@ end
 core.register_ore = function(def)
   if type(def) == "table" then worldname(def.ore) end
 end
+-- a schematic is handed back as it is, so decorations using it can be read
+core.register_schematic = function(def) return def end
 core.register_decoration = function(def)
   if type(def) ~= "table" then return end
   worldname(def.decoration)
@@ -553,6 +641,15 @@ local function wrap_nc()
     end
     wrapped[f] = true
     rawset(nc, "register_hint", f)
+  end
+  local aism = rawget(nc, "register_aism")
+  if type(aism) == "function" and not wrapped[aism] then
+    local f = function(def, ...)
+      if type(def) == "table" and not def.__mod then def.__mod = CURRENT_MOD end
+      return aism(def, ...)
+    end
+    wrapped[f] = true
+    rawset(nc, "register_aism", f)
   end
   local craft = rawget(nc, "register_craft")
   if type(craft) == "function" and not wrapped[craft] then
@@ -704,68 +801,136 @@ local function probe_api(on)
   end
 end
 
-local function probe_abm(def, budget)
-  local found = {}
-  local subjects = expand(def.nodenames)
-  if #subjects > 60 then return found, #subjects end
-  local hoods = {false}
-  if def.neighbors then
-    hoods = {}
-    for _, n in ipairs(expand(def.neighbors)) do hoods[#hoods + 1] = n end
-    if #hoods > 6 then hoods = {hoods[1], hoods[2], hoods[3]} end
+-- Things worth having beside a block or stack when probing: what ABMs
+-- most often look for (water, fire, lava, lux), tried one at a time.
+local ENVIRONMENT = {"nc_terrain:water_source", "nc_fire:fire", "nc_terrain:lava_source", "nc_lux:flux_source",
+  "nc_terrain:dirt"}
+local MAX_SUBJECTS = 150
+local STEPS, TRIALS = 40, 2
+
+local function in_scope(def, subject)
+  if PROBE_ABMS == true then return true end
+  local scope = PROBE_ABMS
+  if scope[def.__mod or ""] then return true end
+  local d = core.registered_items[subject]
+  return d and scope[d.__mod or ""] or false
+end
+
+-- Run `tick(origin, node_at_origin)` STEPS times in a fresh pretend world
+-- with `subject` at the origin (as a node, or a stack lying there) and
+-- `hood` beside it; return the changes seen.
+local function probe_run(subject, hood, as_stack, tick, budget)
+  probe_world, probe_meta, probe_changes, probe_drops = {}, {}, {}, {}
+  -- a fresh spot each time: NodeCore caches some state by position
+  probe_spot = probe_spot + 1
+  local ox = probe_spot * 16
+  local origin = vector.new(ox, 0, 0)
+  local here = pkey(origin)
+  probe_world[here] = {name = as_stack and "nc_items:stack" or subject, param2 = 0}
+  if hood then probe_world[pkey(vector.new(ox + 1, 0, 0))] = {name = hood, param2 = 0} end
+  -- a solid floor, so nothing falls out of the pretend world
+  probe_world[pkey(vector.new(ox, -1, 0))] = {name = "nc_terrain:stone", param2 = 0}
+  local ticks = 0
+  debug.sethook(function() ticks = ticks + 1 if ticks > budget then error("probe budget") end end, "", 10000)
+  local stack = as_stack and ItemStack(subject) or nil
+  local outs = {}
+  for step = 1, STEPS do
+    -- (the game clock: soaking ABMs measure progress by it; it jumps further
+    -- each step, so slow ones such as composting finish within the steps)
+    nc.gametime = (rawget(nc, "gametime") or 0) + 10 * 2 ^ math.min(step, 24)
+    if as_stack then
+      local result
+      local ok, ret = pcall(tick, stack, {pos = origin, node = probe_world[here], set = function(st) result = st end})
+      result = result or (ok and ret) or nil
+      if result then
+        local st = ItemStack(result)
+        if st:get_name() ~= subject then
+          if st:get_name() ~= "" then outs[st:get_name()] = true end
+          break
+        end
+        stack = st
+      end
+      if stack:is_empty() then break end
+    else
+      local node = probe_world[here]
+      if not node or node.name ~= subject then break end
+      pcall(tick, origin, {name = node.name, param2 = node.param2}, 1, 1)
+    end
   end
+  debug.sethook()
+  for _, c in ipairs(probe_changes) do
+    if as_stack then
+      -- a stack can set a node beside it (wet concrete poured into water)
+      if c.to ~= "air" and c.to ~= "nc_items:stack" and c.to ~= subject then outs[c.to] = true end
+    elseif c.pos == here and c.from == subject and c.to ~= subject then
+      outs[c.to] = true
+    end
+  end
+  for _, d in ipairs(probe_drops) do outs[d] = true end
+  return outs
+end
+
+local function probe_def(def, kind, subjects, hoods, budget, found)
+  local tick = def.action
   for _, subject in ipairs(subjects) do
-    for _, hood in ipairs(hoods) do
-      for trial = 1, 3 do
-        probe_world, probe_meta, probe_changes, probe_drops = {}, {}, {}, {}
-        -- a fresh spot each time: NodeCore caches some state by position
-        probe_spot = probe_spot + 1
-        local ox = probe_spot * 16
-        local origin = vector.new(ox, 0, 0)
-        local here = pkey(origin)
-        probe_world[here] = {name = subject, param2 = 0}
-        if hood then probe_world[pkey(vector.new(ox + 1, 0, 0))] = {name = hood, param2 = 0} end
-        -- a solid floor, so nothing falls out of the pretend world
-        probe_world[pkey(vector.new(ox, -1, 0))] = {name = "nc_terrain:stone", param2 = 0}
-        local ticks = 0
-        debug.sethook(function() ticks = ticks + 1 if ticks > budget then error("probe budget") end end, "", 10000)
-        for step = 1, 60 do
-          -- (the game clock: soaking ABMs measure progress by it)
-          nc.gametime = (rawget(nc, "gametime") or 0) + 10
-          local node = probe_world[here]
-          if not node or node.name ~= subject then break end
-          pcall(def.action, origin, {name = node.name, param2 = node.param2}, 1, 1)
-        end
-        debug.sethook()
-        for _, c in ipairs(probe_changes) do
-          if c.pos == here and c.from == subject and c.to ~= subject then
-            found[subject .. ">" .. c.to .. ">" .. tostring(hood)] = {from = subject, to = c.to, with = hood or nil, label = def.label}
+    if in_scope(def, subject) then
+      local plain = {}
+      for _, hood in ipairs(hoods) do
+        for trial = 1, TRIALS do
+          for out in pairs(probe_run(subject, hood, kind == "aism", tick, budget)) do
+            -- a change that happens anyway needs nothing beside it
+            if not hood then plain[out] = true end
+            if (not hood or not plain[out]) and out ~= subject then
+              found[kind .. subject .. ">" .. out .. ">" .. tostring(hood)] = {
+                from = subject, to = out, with = hood or nil, label = def.label, kind = kind, mod = def.__mod}
+            end
           end
-        end
-        for _, d in ipairs(probe_drops) do
-          found[subject .. ">" .. d .. ">drop"] = {from = subject, to = d, with = hood or nil, label = def.label, drop = true}
         end
       end
     end
   end
-  return found, #subjects
 end
 
 local abm_found, abm_skipped = {}, {}
--- (a prototype, off unless asked for: it takes loading from ~3 s to ~15 s)
 if PROBE_ABMS then
-probe_api(true)
-for _, def in ipairs(core.registered_abms) do
-  if type(def) == "table" and type(def.action) == "function" then
-    local ok, found, n = pcall(probe_abm, def, 400)
-    if ok then
-      for _, f in pairs(found) do abm_found[#abm_found + 1] = f end
-      if n and n > 60 then abm_skipped[#abm_skipped + 1] = {label = def.label, nodes = n} end
+  probe_api(true)
+  local env = {false}
+  for _, n in ipairs(ENVIRONMENT) do if core.registered_nodes[n] then env[#env + 1] = n end end
+  local found = {}
+  for _, def in ipairs(core.registered_abms) do
+    if type(def) == "table" and type(def.action) == "function" then
+      local subjects = expand(def.nodenames)
+      if #subjects > MAX_SUBJECTS then
+        abm_skipped[#abm_skipped + 1] = {label = def.label, nodes = #subjects}
+      else
+        local hoods = env
+        if def.neighbors then
+          hoods = {}
+          for _, n in ipairs(expand(def.neighbors)) do hoods[#hoods + 1] = n end
+          if #hoods > 6 then hoods = {hoods[1], hoods[2], hoods[3]} end
+        end
+        pcall(probe_def, def, "abm", subjects, hoods, 300, found)
+      end
     end
   end
-end
-probe_api(false)
-debug.sethook()
+  for _, def in ipairs(type(rawget(nc, "registered_aisms")) == "table" and nc.registered_aisms or {}) do
+    if type(def) == "table" and type(def.action) == "function" then
+      local subjects = {}
+      for name in pairs(core.registered_items) do
+        if name ~= "" and name ~= "air" and name ~= "ignore" and matches(name, def.itemnames) then subjects[#subjects + 1] = name end
+      end
+      table.sort(subjects)
+      if #subjects > MAX_SUBJECTS then
+        abm_skipped[#abm_skipped + 1] = {label = def.label, items = #subjects}
+      else
+        pcall(probe_def, def, "aism", subjects, env, 300, found)
+      end
+    end
+  end
+  for _, f in pairs(found) do abm_found[#abm_found + 1] = f end
+  table.sort(abm_found, function(x, y) return (x.from .. x.to .. (x.with or "")) < (y.from .. y.to .. (y.with or "")) end)
+  probe_api(false)
+  debug.sethook()
 end
 results.abm_changes = abm_found
 results.abm_skipped = abm_skipped

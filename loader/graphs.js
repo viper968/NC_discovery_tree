@@ -224,6 +224,24 @@ function recipesOf(dump, reg) {
   for (const [mod, names] of byMod) {
     out.push({ label: 'leaves dropping things as they decay', action: 'decay', inputs: [{ kind: 'group', groups: ['canopy'], role: 'target' }], outputs: [...names], mod });
   }
+  // what game code turns things into (ABMs and item-stack ABMs, probed by
+  // extract.lua): one way of making `to` per thing it starts from, needing
+  // one of the neighbours that brought it about, unless it happens anyway
+  const changes = new Map();
+  for (const c of dump.abm_changes || []) {
+    const from = reg.resolve(c.from), to = reg.resolve(c.to);
+    if (!reg.items[from] || !reg.items[to] || from === to || /_flowing$/.test(to)) continue;
+    const k = `${c.kind}|${from}|${to}`;
+    if (!changes.has(k)) changes.set(k, { kind: c.kind, from, to, labels: new Set(), hoods: new Set(), anyway: false, mod: c.mod });
+    const ch = changes.get(k);
+    if (c.label) ch.labels.add(c.label);
+    if (c.with) ch.hoods.add(reg.resolve(c.with)); else ch.anyway = true;
+  }
+  for (const ch of changes.values()) {
+    const inputs = [{ kind: 'item', name: ch.from, role: ch.kind === 'aism' ? 'stack' : 'target' }];
+    if (!ch.anyway && ch.hoods.size) inputs.push({ kind: 'oneof', names: [...ch.hoods].sort(), role: 'beside' });
+    out.push({ label: [...ch.labels].join(', ') || 'game code', action: ch.kind, inputs, outputs: [ch.to], mod: ch.mod });
+  }
   // what digging a node takes: a tool (or the hand) for one of its dig groups
   const digGroups = new Set(Object.keys(asObj(dump.hand)));
   for (const def of Object.values(reg.items)) for (const g of Object.keys(reg.capsOf(def))) digGroups.add(g);
@@ -303,7 +321,7 @@ function sourceComponents(nodes) {
 // ---------------------------------------------------------------- recipes
 
 // ways of getting something that only change a thing already there
-const SELF_ACTIONS = new Set(['dig', 'heat', 'cool', 'quench', 'wear', 'repack', 'infuse', 'wilt', 'degrade', 'decay', 'ignite']);
+const SELF_ACTIONS = new Set(['dig', 'heat', 'cool', 'quench', 'wear', 'repack', 'infuse', 'wilt', 'degrade', 'decay', 'ignite', 'abm', 'aism']);
 
 // of those, the ones the world does by itself or a dig does
 const NATURAL_ACTIONS = new Set(['dig', 'repack', 'wilt', 'degrade', 'decay']);
@@ -311,9 +329,9 @@ const NATURAL_ACTIONS = new Set(['dig', 'repack', 'wilt', 'degrade', 'decay']);
 const ACTION_TEXT = {
   pummel: 'Pummel', press: 'Press', place: 'Place', cook: 'Cook', stackapply: 'Apply held item',
   dig: 'Dig', heat: 'Heat', cool: 'Cool', quench: 'Quench', wear: 'Wear out', repack: 'Repack', infuse: 'Lux',
-  wilt: 'Wilt', degrade: 'Degrade', decay: 'Decay', ignite: 'Burn', craft: 'Craft grid', 'shapeless craft': 'Craft grid (any order)', furnace: 'Furnace',
+  wilt: 'Wilt', degrade: 'Degrade', decay: 'Decay', ignite: 'Burn', abm: 'Over time', aism: 'Over time, in a pile or carried', craft: 'Craft grid', 'shapeless craft': 'Craft grid (any order)', furnace: 'Furnace',
 };
-const ROLE_TEXT = { target: '', beside: 'beside it: ', held: 'holding ', tool: '' };
+const ROLE_TEXT = { target: '', beside: 'beside it: ', held: 'holding ', tool: '', stack: '' };
 
 /** Items as nodes, each needing any one of the recipes that make it. */
 export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
@@ -328,6 +346,8 @@ export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
     }
     // digging or a change of state alone does not make something an ingredient
     if (!SELF_ACTIONS.has(r.action)) for (const i of r.inputs) if (i.kind === 'item') used.add(i.name);
+    // what has to be beside something for it to change (water, fire...) is needed too
+    for (const i of r.inputs) if (i.kind === 'oneof') i.names.forEach((n) => used.add(n));
   }
   const world = new Set(dump.world || []);
   // what can be made or found, what recipes call for, and everything an added mod brings
@@ -344,7 +364,8 @@ export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
     const pre = ROLE_TEXT[inp.role] || '';
     const count = inp.count > 1 ? ` ×${inp.count}` : '';
     if (inp.kind === 'item') {
-      return { op: 'key', key: inp.name, label: `${pre}${inp.name}${count}`, providers: known.has(inp.name) ? [{ id: id(inp.name) }] : [],
+      const name = firstLine(reg.items[inp.name] && reg.items[inp.name].description) || inp.name;
+      return { op: 'key', key: inp.name, label: `${pre}${name}${count}`, providers: known.has(inp.name) ? [{ id: id(inp.name) }] : [],
         note: known.has(inp.name) ? undefined : 'Not registered by any loaded mod.' };
     }
     if (inp.kind === 'group') {
@@ -352,6 +373,12 @@ export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
       const list = reg.members(inp.groups).filter((n) => known.has(n));
       return { op: 'key', key, label: `${pre}any ${inp.groups.join(' + ')}${count}`, providers: list.map((n) => ({ id: id(n) })),
         note: list.length ? undefined : 'No loaded item is in this group.' };
+    }
+    if (inp.kind === 'oneof') {
+      const list = inp.names.filter((n) => known.has(n));
+      const names = [...new Set(list.map((n) => firstLine(reg.items[n].description) || n))];
+      return { op: 'key', key: `oneof:${inp.names.join('|')}`, label: `${pre}${names.length > 1 ? 'any of ' : ''}${names.slice(0, 4).join(', ')}${names.length > 4 ? ', …' : ''}`,
+        providers: list.map((n) => ({ id: id(n) })), note: list.length ? undefined : 'Nothing loaded is like this.' };
     }
     if (inp.kind === 'tool') {
       const of = inp.groups.map(([g, lv]) => {
@@ -391,12 +418,18 @@ export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
   // one upstream thing at a time, so what follows from it (loose leaves,
   // tempered lode) still gets its real way of being made.
   const byName = new Map(nodes.map((n) => [n.info.name, n]));
-  const assume = (n) => {
-    n.req = { op: 'or', of: [{ op: 'always', label: 'Found in the world (assumed)' }, ...(n.req.op === 'or' ? n.req.of : [n.req])] };
-    n.info.assumed = true;
+  const assume = (n, natural) => {
+    const before = { req: n.req, info: n.info };
+    n.req = { op: 'or', of: [{ op: 'always', label: 'Assumed available',
+      note: natural ? 'Nothing this page can read starts it; it is probably found in the world.'
+        : 'Nothing this page can read starts it; probably game code does, such as lighting the first fire by rubbing sticks.' },
+    ...(n.req.op === 'or' ? n.req.of : [n.req])] };
+    n.info = { ...n.info, assumed: natural ? 'world' : 'code' };
+    return () => { n.req = before.req; n.info = before.info; };
   };
   const canAssume = (n) => !n.info.assumed && (made.get(n.info.name) || []).length
     && !(made.get(n.info.name) || []).some((r) => !SELF_ACTIONS.has(r.action));
+  const natural = (n) => (made.get(n.info.name) || []).every((r) => NATURAL_ACTIONS.has(r.action));
   for (let guard = 0; guard < nodes.length; guard++) {
     // (things only game code makes stay out of reach, and feed nothing here)
     const lost = nodes.filter((n) => n.unreachable && (made.get(n.info.name) || []).length);
@@ -404,17 +437,30 @@ export function recipeTreeFromExtract(dump, { title = 'Recipes' } = {}) {
     // the unreachable things nothing else unreachable leads to: their
     // strongly connected groups with no way in from outside
     const groups = sourceComponents(lost);
-    // within a group, the likeliest thing to really be lying around: one
-    // only dug, decayed or repacked into being (not heated or worn out),
-    // and of those the one most else is waiting on
-    const natural = (n) => (made.get(n.info.name) || []).every((r) => NATURAL_ACTIONS.has(r.action));
     const waiting = (n) => lost.filter((m) => m.req && JSON.stringify(m.req).includes(`"${n.id}"`)).length;
-    const pick = groups.map((g) => g.filter(canAssume)
-      .map((n) => ({ n, nat: natural(n) ? 1 : 0, w: waiting(n) }))
-      .sort((a, b) => b.nat - a.nat || b.w - a.w || a.n.id.localeCompare(b.n.id))[0]).filter(Boolean).map((x) => x.n);
-    if (!pick.length) break;
-    pick.forEach(assume);
-    settle(nodes);
+    let progress = false;
+    for (const g of groups) {
+      // within a group, the likeliest thing to be lying around first (one only
+      // dug, decayed or repacked into being), then the one most is waiting on
+      const order = g.filter(canAssume)
+        .map((n) => ({ n, nat: natural(n) ? 1 : 0, w: waiting(n) }))
+        .sort((x, y) => y.nat - x.nat || y.w - x.w || x.n.id.localeCompare(y.n.id));
+      for (const { n, nat } of order) {
+        // never accept a guess that makes something already reachable cheaper
+        // (that is how a "found" tempered tool would undercut forging one)
+        const was = new Map(nodes.filter((m) => !m.unreachable).map((m) => [m.id, m.tier]));
+        const undo = assume(n, !!nat);
+        settle(nodes);
+        if (nodes.some((m) => was.has(m.id) && m.tier < was.get(m.id))) {
+          undo();
+          settle(nodes);
+          continue;
+        }
+        progress = true;
+        break;
+      }
+    }
+    if (!progress) break;
   }
   return { kind: 'recipes', nodes, meta: { title, count: nodes.length, recipes: recipes.length, ...metaOf(dump) } };
 }

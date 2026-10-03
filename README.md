@@ -52,15 +52,36 @@ This reuses the mod-installing code from
 [nodecore_light_logic_sim](https://github.com/viper968/nodecore_light_logic_sim)
 (`claude/nodecore-mods` branch); `loader/README.md` lists what came from where.
 
+### Changes made by game code (ABMs)
+
+Much of NodeCore happens without a recipe: concrete wets beside water,
+sets and cures; glowing lode cools; torches catch from embers and burn
+down; peat composts into humus. These are ABMs (and item-stack ABMs for
+things lying in piles or carried), which are Lua functions, not data. So
+the loader **probes** them: it puts each block or stack an ABM applies to
+in a small pretend world, alone and then beside each neighbour the ABM
+asks for (or water, fire, lava, lux or dirt for those that check in code),
+runs the ABM's own Lua for a while with the game clock running fast, and
+records what the block turns into. Those changes become steps in the
+recipe tree, marked *Over time*, with the neighbour as a requirement
+("beside it: any of Water…"). For cloudstone that gives crude glass +
+ash → spackling → wet spackling (beside water) → pliant cloudstone →
+cloudstone.
+
+NodeCore's own ABMs are probed once, into `data/nodecore-extract.json`
+(`node tools/extract-cli.mjs --probe-abms`, about 20 s). In the page only
+what added mods bring is probed, which adds a few seconds when mods load.
+
 ### What it can't see
 
-The recipe tree is read from what mods *register*. Things done purely by
-game code (ABMs and callbacks: lux charging, drying rushes, trees growing)
-aren't recipes, so:
-
-- An item only game code makes is marked **Out of reach**.
-- Something only ever dug or decayed into being, with no recipe behind it
-  (leaves, loose lux cobble), is marked *found in the world (assumed)*.
+- Things only a player action starts (carving a pattern into pliant
+  concrete with a stylus, right-clicking coal onto aggregate, lighting the
+  first fire by rubbing sticks) or that need an arrangement the probe
+  doesn't build (lux cobble charging from lux around it, lanterns
+  charging). An item only that kind of code makes is marked **Out of reach**.
+- When a whole chain only starts from such a thing (fire, say), one item
+  in it is marked *Assumed available*, so the rest can be reached. A guess
+  is never allowed to make something already reachable come cheaper.
 - Hints mods add are linked automatically, by the same key expansion
   NodeCore's `expandkey()` uses. NodeCore's own hints keep the hand-checked
   links from `data/nodecore-discovery.json`.
